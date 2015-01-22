@@ -9,3 +9,4 @@ notes.txt
 tags
 .dbg_history
 cmd/dlv/dlv
+*.swp

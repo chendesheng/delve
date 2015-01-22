@@ -9,9 +9,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/derekparker/delve/command"
-	"github.com/derekparker/delve/goreadline"
-	"github.com/derekparker/delve/proctl"
+	"github.com/chendesheng/delve/command"
+	"github.com/chendesheng/delve/goreadline"
+	"github.com/chendesheng/delve/proctl"
 )
 
 const historyFile string = ".dbg_history"
@@ -98,7 +98,7 @@ func handleExit(dbp *proctl.DebuggedProcess, status int) {
 	}
 	answer := strings.TrimSuffix(*answerp, "\n")
 
-	for pc := range dbp.BreakPoints {
+	for pc := range dbp.Breakpoints {
 		if _, err := dbp.Clear(pc); err != nil {
 			fmt.Printf("Can't clear breakpoint @%x: %s\n", pc, err)
 		}

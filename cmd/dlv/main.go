@@ -6,7 +6,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/derekparker/delve/client/cli"
+	"github.com/chendesheng/delve/client/cli"
 )
 
 const version string = "0.3.1.beta"

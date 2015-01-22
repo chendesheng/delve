@@ -9,8 +9,8 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/derekparker/delve/dwarf/op"
-	"github.com/derekparker/delve/dwarf/reader"
+	"github.com/chendesheng/delve/dwarf/op"
+	"github.com/chendesheng/delve/dwarf/reader"
 )
 
 type Variable struct {

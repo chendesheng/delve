@@ -11,22 +11,24 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
-	"github.com/derekparker/delve/dwarf/frame"
-	"github.com/derekparker/delve/dwarf/reader"
+	"github.com/chendesheng/delve/dwarf/frame"
+	"github.com/chendesheng/delve/dwarf/reader"
 )
 
 // Struct representing a debugged process. Holds onto pid, register values,
 // process struct and process state.
 type DebuggedProcess struct {
+	debuggedProcess
 	Pid                 int
 	Process             *os.Process
 	Dwarf               *dwarf.Data
 	GoSymTable          *gosym.Table
 	FrameEntries        *frame.FrameDescriptionEntries
-	HWBreakPoints       [4]*BreakPoint
-	BreakPoints         map[uint64]*BreakPoint
+	HWBreakpoints       [4]*Breakpoint
+	Breakpoints         map[uint64]*Breakpoint
 	Threads             map[int]*ThreadContext
 	CurrentThread       *ThreadContext
 	breakpointIDCounter int
@@ -86,7 +88,7 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	dbp := DebuggedProcess{
 		Pid:         pid,
 		Threads:     make(map[int]*ThreadContext),
-		BreakPoints: make(map[uint64]*BreakPoint),
+		Breakpoints: make(map[uint64]*Breakpoint),
 	}
 
 	if attach {
@@ -115,32 +117,6 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	}
 
 	return &dbp, nil
-}
-
-func (dbp *DebuggedProcess) AttachThread(tid int) (*ThreadContext, error) {
-	if thread, ok := dbp.Threads[tid]; ok {
-		return thread, nil
-	}
-
-	err := syscall.PtraceAttach(tid)
-	if err != nil && err != syscall.EPERM {
-		// Do not return err if err == EPERM,
-		// we may already be tracing this thread due to
-		// PTRACE_O_TRACECLONE. We will surely blow up later
-		// if we truly don't have permissions.
-		return nil, fmt.Errorf("could not attach to new thread %d %s", tid, err)
-	}
-
-	pid, status, err := wait(tid, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	if status.Exited() {
-		return nil, fmt.Errorf("thread already exited %d", pid)
-	}
-
-	return dbp.addThread(tid)
 }
 
 func (dbp *DebuggedProcess) Running() bool {
@@ -182,7 +158,7 @@ func (dbp *DebuggedProcess) FindLocation(str string) (uint64, error) {
 		}
 
 		// Use as breakpoint id
-		for _, bp := range dbp.BreakPoints {
+		for _, bp := range dbp.Breakpoints {
 			// ID
 			if uint64(bp.ID) == id {
 				return bp.Addr, nil
@@ -194,24 +170,13 @@ func (dbp *DebuggedProcess) FindLocation(str string) (uint64, error) {
 	}
 }
 
-func (dbp *DebuggedProcess) RequestManualStop() {
-	dbp.halt = true
-	for _, th := range dbp.Threads {
-		if stopped(th.Id) {
-			continue
-		}
-		syscall.Tgkill(dbp.Pid, th.Id, syscall.SIGSTOP)
-	}
-	dbp.running = false
-}
-
 // Sets a breakpoint in the current thread.
-func (dbp *DebuggedProcess) Break(addr uint64) (*BreakPoint, error) {
+func (dbp *DebuggedProcess) Break(addr uint64) (*Breakpoint, error) {
 	return dbp.CurrentThread.Break(addr)
 }
 
 // Sets a breakpoint by location string (function, file+line, address)
-func (dbp *DebuggedProcess) BreakByLocation(loc string) (*BreakPoint, error) {
+func (dbp *DebuggedProcess) BreakByLocation(loc string) (*Breakpoint, error) {
 	addr, err := dbp.FindLocation(loc)
 	if err != nil {
 		return nil, err
@@ -220,12 +185,12 @@ func (dbp *DebuggedProcess) BreakByLocation(loc string) (*BreakPoint, error) {
 }
 
 // Clears a breakpoint in the current thread.
-func (dbp *DebuggedProcess) Clear(addr uint64) (*BreakPoint, error) {
+func (dbp *DebuggedProcess) Clear(addr uint64) (*Breakpoint, error) {
 	return dbp.CurrentThread.Clear(addr)
 }
 
 // Clears a breakpoint by location (function, file+line, address, breakpoint id)
-func (dbp *DebuggedProcess) ClearByLocation(loc string) (*BreakPoint, error) {
+func (dbp *DebuggedProcess) ClearByLocation(loc string) (*Breakpoint, error) {
 	addr, err := dbp.FindLocation(loc)
 	if err != nil {
 		return nil, err
@@ -336,7 +301,7 @@ func (dbp *DebuggedProcess) Continue() error {
 		if err != nil {
 			return err
 		}
-		return handleBreakPoint(dbp, wpid)
+		return handleBreakpoint(dbp, wpid)
 	}
 	return dbp.run(fn)
 }
@@ -389,38 +354,7 @@ func (pe ProcessExitedError) Error() string {
 	return fmt.Sprintf("process %d has exited", pe.pid)
 }
 
-func trapWait(dbp *DebuggedProcess, pid int) (int, *syscall.WaitStatus, error) {
-	for {
-		wpid, status, err := wait(pid, 0)
-		if err != nil {
-			return -1, nil, fmt.Errorf("wait err %s %d", err, pid)
-		}
-		if wpid == 0 {
-			continue
-		}
-		if th, ok := dbp.Threads[wpid]; ok {
-			th.Status = status
-		}
-		if status.Exited() && wpid == dbp.Pid {
-			return -1, status, ProcessExitedError{wpid}
-		}
-		if status.StopSignal() == syscall.SIGTRAP && status.TrapCause() == syscall.PTRACE_EVENT_CLONE {
-			err = addNewThread(dbp, wpid)
-			if err != nil {
-				return -1, nil, err
-			}
-			continue
-		}
-		if status.StopSignal() == syscall.SIGTRAP {
-			return wpid, status, nil
-		}
-		if status.StopSignal() == syscall.SIGSTOP && dbp.halt {
-			return -1, nil, ManualStopError{}
-		}
-	}
-}
-
-func handleBreakPoint(dbp *DebuggedProcess, pid int) error {
+func handleBreakpoint(dbp *DebuggedProcess, pid int) error {
 	thread := dbp.Threads[pid]
 	if pid != dbp.CurrentThread.Id {
 		fmt.Printf("thread context changed from %d to %d\n", dbp.CurrentThread.Id, pid)
@@ -447,7 +381,7 @@ func handleBreakPoint(dbp *DebuggedProcess, pid int) error {
 	}
 
 	// Check for hardware breakpoint
-	for _, bp := range dbp.HWBreakPoints {
+	for _, bp := range dbp.HWBreakpoints {
 		if bp.Addr == pc {
 			if !bp.temp {
 				stopTheWorld(dbp)
@@ -456,7 +390,7 @@ func handleBreakPoint(dbp *DebuggedProcess, pid int) error {
 		}
 	}
 	// Check to see if we have hit a software breakpoint.
-	if bp, ok := dbp.BreakPoints[pc-1]; ok {
+	if bp, ok := dbp.Breakpoints[pc-1]; ok {
 		if !bp.temp {
 			stopTheWorld(dbp)
 		}
@@ -466,59 +400,75 @@ func handleBreakPoint(dbp *DebuggedProcess, pid int) error {
 	return fmt.Errorf("did not hit recognized breakpoint")
 }
 
-// Ensure execution of every traced thread is halted.
-func stopTheWorld(dbp *DebuggedProcess) error {
-	// Loop through all threads and ensure that we
-	// stop the rest of them, so that by the time
-	// we return control to the user, all threads
-	// are inactive. We send SIGSTOP and ensure all
-	// threads are in in signal-delivery-stop mode.
-	for _, th := range dbp.Threads {
-		if stopped(th.Id) {
-			continue
-		}
-		err := syscall.Tgkill(dbp.Pid, th.Id, syscall.SIGSTOP)
-		if err != nil {
-			return err
-		}
-		pid, _, err := wait(th.Id, syscall.WNOHANG)
-		if err != nil {
-			return fmt.Errorf("wait err %s %d", err, pid)
-		}
+func (dbp *DebuggedProcess) parseDebugFrame(exe exefile, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	debugFrame, err := exe.Section(S_DEBUG_FRAME).Data()
+	if err != nil {
+		fmt.Println("could not get .debug_frame section", err)
+		os.Exit(1)
 	}
 
-	return nil
+	dbp.FrameEntries = frame.Parse(debugFrame)
 }
 
-func addNewThread(dbp *DebuggedProcess, pid int) error {
-	// A traced thread has cloned a new thread, grab the pid and
-	// add it to our list of traced threads.
-	msg, err := syscall.PtraceGetEventMsg(pid)
-	if err != nil {
-		return fmt.Errorf("could not get event message: %s", err)
-	}
-	fmt.Println("new thread spawned", msg)
+func (dbp *DebuggedProcess) obtainGoSymbols(exe exefile, wg *sync.WaitGroup) {
+	defer wg.Done()
 
-	_, err = dbp.addThread(int(msg))
+	var (
+		symdat  []byte
+		pclndat []byte
+		err     error
+	)
+
+	if sec := exe.Section(S_GOSYMTAB); sec != nil {
+		symdat, err = sec.Data()
+		if err != nil {
+			fmt.Println("could not get .gosymtab section", err)
+			os.Exit(1)
+		}
+	}
+
+	if sec := exe.Section(S_GOPCLNTAB); sec != nil {
+		pclndat, err = sec.Data()
+		if err != nil {
+			fmt.Println("could not get .gopclntab section", err)
+			os.Exit(1)
+		}
+	}
+
+	pcln := gosym.NewLineTable(pclndat, exe.Section(S_TEXT).Addr)
+	tab, err := gosym.NewTable(symdat, pcln)
+	if err != nil {
+		fmt.Println("could not get initialize line table", err)
+		os.Exit(1)
+	}
+
+	dbp.GoSymTable = tab
+}
+
+// Finds the executable from /proc/<pid>/exe and then
+// uses that to parse the following information:
+// * Dwarf .debug_frame section
+// * Dwarf .debug_line section
+// * Go symbol table.
+func (dbp *DebuggedProcess) LoadInformation() error {
+	var (
+		wg  sync.WaitGroup
+		exe exefile
+		err error
+	)
+
+	exe, err = dbp.findExecutable()
 	if err != nil {
 		return err
 	}
 
-	err = syscall.PtraceCont(int(msg), 0)
-	if err != nil {
-		return fmt.Errorf("could not continue new thread %d %s", msg, err)
-	}
+	wg.Add(2)
+	go dbp.parseDebugFrame(exe, &wg)
+	go dbp.obtainGoSymbols(exe, &wg)
 
-	err = syscall.PtraceCont(pid, 0)
-	if err != nil {
-		return fmt.Errorf("could not continue stopped thread %d %s", pid, err)
-	}
+	wg.Wait()
 
 	return nil
-}
-
-func wait(pid, options int) (int, *syscall.WaitStatus, error) {
-	var status syscall.WaitStatus
-	wpid, err := syscall.Wait4(pid, &status, syscall.WALL|options, nil)
-	return wpid, &status, err
 }

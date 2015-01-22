@@ -11,7 +11,7 @@ This project is currently in beta. Most of the functionality is there, but there
 Delve requires Go 1.4 to build.
 
 ```
-go get github.com/derekparker/delve/cmd/dlv
+go get github.com/chendesheng/delve/cmd/dlv
 ```
 
 You will need readline installed on your system. With apt simply: `sudo apt-get install libreadline-dev` .

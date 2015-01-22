@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/derekparker/delve/dwarf/util"
+	"github.com/chendesheng/delve/dwarf/util"
 )
 
 const (

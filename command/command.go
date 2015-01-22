@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/derekparker/delve/proctl"
+	"github.com/chendesheng/delve/proctl"
 )
 
 type cmdfunc func(proc *proctl.DebuggedProcess, args ...string) error

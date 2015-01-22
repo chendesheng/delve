@@ -106,7 +106,7 @@ func TestContinue(t *testing.T) {
 	})
 }
 
-func TestBreakPoint(t *testing.T) {
+func TestBreakpoint(t *testing.T) {
 	withTestProcess("../_fixtures/testprog", t, func(p *DebuggedProcess) {
 		sleepytimefunc := p.GoSymTable.LookupFunc("main.helloworld")
 		sleepyaddr := sleepytimefunc.Entry
@@ -142,7 +142,7 @@ func TestBreakPoint(t *testing.T) {
 	})
 }
 
-func TestBreakPointInSeperateGoRoutine(t *testing.T) {
+func TestBreakpointInSeperateGoRoutine(t *testing.T) {
 	withTestProcess("../_fixtures/testthreads", t, func(p *DebuggedProcess) {
 		fn := p.GoSymTable.LookupFunc("main.anotherthread")
 		if fn == nil {
@@ -171,7 +171,7 @@ func TestBreakPointInSeperateGoRoutine(t *testing.T) {
 	})
 }
 
-func TestBreakPointWithNonExistantFunction(t *testing.T) {
+func TestBreakpointWithNonExistantFunction(t *testing.T) {
 	withTestProcess("../_fixtures/testprog", t, func(p *DebuggedProcess) {
 		_, err := p.Break(0)
 		if err == nil {
@@ -180,7 +180,7 @@ func TestBreakPointWithNonExistantFunction(t *testing.T) {
 	})
 }
 
-func TestClearBreakPoint(t *testing.T) {
+func TestClearBreakpoint(t *testing.T) {
 	withTestProcess("../_fixtures/testprog", t, func(p *DebuggedProcess) {
 		fn := p.GoSymTable.LookupFunc("main.sleepytime")
 		bp, err := p.Break(fn.Entry)
@@ -199,7 +199,7 @@ func TestClearBreakPoint(t *testing.T) {
 			t.Fatalf("Breakpoint was not cleared data: %#v, int3: %#v", data, int3)
 		}
 
-		if len(p.BreakPoints) != 0 {
+		if len(p.Breakpoints) != 0 {
 			t.Fatal("Breakpoint not removed internally")
 		}
 	})
@@ -260,10 +260,10 @@ func TestNext(t *testing.T) {
 		}
 
 		p.Clear(pc)
-		if len(p.BreakPoints) != 0 {
-			t.Fatal("Not all breakpoints were cleaned up", len(p.HWBreakPoints))
+		if len(p.Breakpoints) != 0 {
+			t.Fatal("Not all breakpoints were cleaned up", len(p.HWBreakpoints))
 		}
-		for _, bp := range p.HWBreakPoints {
+		for _, bp := range p.HWBreakpoints {
 			if bp != nil {
 				t.Fatal("Not all breakpoints were cleaned up", bp.Addr)
 			}

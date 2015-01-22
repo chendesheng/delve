@@ -1,31 +1,6 @@
 package proctl
 
-/*
-#include <stddef.h>
-#include <sys/user.h>
-#include <sys/debugreg.h>
-
-// Exposes C macro `offsetof` which is needed for getting
-// the offset of the debug register we want, and passing
-// that offset to PTRACE_POKE_USER.
-int offset(int reg) {
-	return offsetof(struct user, u_debugreg[reg]);
-}
-*/
-import "C"
-
-import (
-	"fmt"
-	"syscall"
-)
-
-func PtracePokeUser(tid int, off, addr uintptr) error {
-	_, _, err := syscall.Syscall6(syscall.SYS_PTRACE, syscall.PTRACE_POKEUSR, uintptr(tid), uintptr(off), uintptr(addr), 0, 0)
-	if err != syscall.Errno(0) {
-		return err
-	}
-	return nil
-}
+import "fmt"
 
 func (dbp *DebuggedProcess) setBreakpoint(tid int, addr uint64) (*Breakpoint, error) {
 	var f, l, fn = dbp.GoSymTable.PCToLine(uint64(addr))
@@ -86,24 +61,6 @@ func (dbp *DebuggedProcess) clearBreakpoint(tid int, addr uint64) (*Breakpoint, 
 // that we want to break at. There are only 4 debug registers
 // DR0-DR3. Debug register 7 is the control register.
 func setHardwareBreakpoint(reg, tid int, addr uint64) error {
-	if reg < 0 || reg > 7 {
-		return fmt.Errorf("invalid register value")
-	}
-
-	var (
-		off     = uintptr(C.offset(C.int(reg)))
-		dr7     = uintptr(0x1 | C.DR_RW_EXECUTE | C.DR_LEN_8)
-		dr7addr = uintptr(C.offset(C.DR_CONTROL))
-	)
-
-	// Set the debug register `reg` with the address of the
-	// instruction we want to trigger a debug exception.
-	if err := PtracePokeUser(tid, off, uintptr(addr)); err != nil {
-		return err
-	}
-	// Set the debug control register. This
-	// instructs the cpu to raise a debug
-	// exception when hitting the address of
-	// an instruction stored in dr0-dr3.
-	return PtracePokeUser(tid, dr7addr, dr7)
+	//TODO
+	return fmt.Errorf("Not implemented")
 }

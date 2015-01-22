@@ -1,6 +1,9 @@
 package proctl
 
-import "syscall"
+import (
+	"errors"
+	"syscall"
+)
 
 type Regs struct {
 	regs *syscall.PtraceRegs
@@ -17,6 +20,14 @@ func (r *Regs) SP() uint64 {
 func (r *Regs) SetPC(tid int, pc uint64) error {
 	r.regs.SetPC(pc)
 	return syscall.PtraceSetRegs(tid, r.regs)
+}
+
+func (r *Regs) Rflags() uint64 {
+	return 0
+}
+
+func (r *Regs) SetRflags(int, uint64) error {
+	return errors.New("Not implemented")
 }
 
 func registers(tid int) (Registers, error) {
@@ -38,4 +49,12 @@ func readMemory(tid int, addr uintptr, data []byte) (int, error) {
 
 func clearHardwareBreakpoint(reg, tid int) error {
 	return setHardwareBreakpoint(reg, tid, 0)
+}
+
+func singleStep(tid int) error {
+	return syscall.PtraceSingleStep(tid)
+}
+
+func ptraceCont(tid int) error {
+	return syscall.PtraceCont(tid, 0)
 }

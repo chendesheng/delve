@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"syscall"
 
-	"github.com/derekparker/delve/dwarf/frame"
+	"github.com/chendesheng/delve/dwarf/frame"
 )
 
 // ThreadContext represents a single thread of execution in the
@@ -20,6 +20,8 @@ type Registers interface {
 	PC() uint64
 	SP() uint64
 	SetPC(int, uint64) error
+	Rflags() uint64
+	SetRflags(int, uint64) error
 }
 
 // Obtains register values from the debugged process.
@@ -67,12 +69,12 @@ func (thread *ThreadContext) PrintInfo() error {
 // hardware supports it, and there are free debug registers, Delve
 // will set a hardware breakpoint. Otherwise we fall back to software
 // breakpoints, which are a bit more work for us.
-func (thread *ThreadContext) Break(addr uint64) (*BreakPoint, error) {
+func (thread *ThreadContext) Break(addr uint64) (*Breakpoint, error) {
 	return thread.Process.setBreakpoint(thread.Id, addr)
 }
 
 // Clears a breakpoint, and removes it from the process level break point table.
-func (thread *ThreadContext) Clear(addr uint64) (*BreakPoint, error) {
+func (thread *ThreadContext) Clear(addr uint64) (*Breakpoint, error) {
 	return thread.Process.clearBreakpoint(thread.Id, addr)
 }
 
@@ -84,14 +86,14 @@ func (thread *ThreadContext) Continue() error {
 		return fmt.Errorf("could not get registers %s", err)
 	}
 
-	if _, ok := thread.Process.BreakPoints[regs.PC()-1]; ok {
+	if _, ok := thread.Process.Breakpoints[regs.PC()-1]; ok {
 		err := thread.Step()
 		if err != nil {
 			return fmt.Errorf("could not step %s", err)
 		}
 	}
 
-	return syscall.PtraceCont(thread.Id, 0)
+	return ptraceCont(thread.Id)
 }
 
 // Single steps this thread a single instruction, ensuring that
@@ -102,7 +104,7 @@ func (thread *ThreadContext) Step() (err error) {
 		return err
 	}
 
-	bp, ok := thread.Process.BreakPoints[regs.PC()-1]
+	bp, ok := thread.Process.Breakpoints[regs.PC()-1]
 	if ok {
 		// Clear the breakpoint so that we can continue execution.
 		_, err = thread.Clear(bp.Addr)
@@ -122,7 +124,7 @@ func (thread *ThreadContext) Step() (err error) {
 		}()
 	}
 
-	err = syscall.PtraceSingleStep(thread.Id)
+	err = singleStep(thread.Id)
 	if err != nil {
 		return fmt.Errorf("step failed: %s", err.Error())
 	}
@@ -148,7 +150,7 @@ func (thread *ThreadContext) Next() (err error) {
 		return err
 	}
 
-	if bp, ok := thread.Process.BreakPoints[pc-1]; ok {
+	if bp, ok := thread.Process.Breakpoints[pc-1]; ok {
 		pc = bp.Addr
 	}
 
@@ -197,7 +199,7 @@ func (thread *ThreadContext) continueToReturnAddress(pc uint64, fde *frame.Frame
 		addr := thread.ReturnAddressFromOffset(0)
 		bp, err := thread.Break(addr)
 		if err != nil {
-			if _, ok := err.(BreakPointExistsError); !ok {
+			if _, ok := err.(BreakpointExistsError); !ok {
 				return err
 			}
 		}
@@ -248,7 +250,7 @@ func (thread *ThreadContext) ReturnAddressFromOffset(offset int64) uint64 {
 
 func (thread *ThreadContext) clearTempBreakpoint(pc uint64) error {
 	var software bool
-	if _, ok := thread.Process.BreakPoints[pc]; ok {
+	if _, ok := thread.Process.Breakpoints[pc]; ok {
 		software = true
 	}
 	if _, err := thread.Clear(pc); err != nil {
