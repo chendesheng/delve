@@ -10,23 +10,25 @@ func (dbp *DebuggedProcess) setBreakpoint(tid int, addr uint64) (*Breakpoint, er
 	if dbp.BreakpointExists(addr) {
 		return nil, BreakpointExistsError{f, l, addr}
 	}
-	// Try and set a hardware breakpoint.
-	for i, v := range dbp.HWBreakpoints {
-		if v == nil {
-			if err := setHardwareBreakpoint(i, tid, addr); err != nil {
-				return nil, fmt.Errorf("could not set hardware breakpoint")
-			}
-			dbp.HWBreakpoints[i] = dbp.newBreakpoint(fn.Name, f, l, addr, nil)
-			return dbp.HWBreakpoints[i], nil
-		}
-	}
+
+	//	// Try and set a hardware breakpoint.
+	//	for i, v := range dbp.HWBreakpoints {
+	//		if v == nil {
+	//			if err := setHardwareBreakpoint(i, tid, addr); err != nil {
+	//				return nil, fmt.Errorf("could not set hardware breakpoint")
+	//			}
+	//			dbp.HWBreakpoints[i] = dbp.newBreakpoint(fn.Name, f, l, addr, nil)
+	//			return dbp.HWBreakpoints[i], nil
+	//		}
+	//	}
+
 	// Fall back to software breakpoint. 0xCC is INT 3, software
 	// breakpoint trap interrupt.
 	originalData := make([]byte, 1)
-	if _, err := readMemory(tid, uintptr(addr), originalData); err != nil {
+	if _, err := readMemory(dbp.taskport, uintptr(addr), originalData); err != nil {
 		return nil, err
 	}
-	_, err := writeMemory(tid, uintptr(addr), []byte{0xCC})
+	_, err := writeMemory(dbp.taskport, uintptr(addr), []byte{0xCC})
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +49,7 @@ func (dbp *DebuggedProcess) clearBreakpoint(tid int, addr uint64) (*Breakpoint, 
 	}
 	// Check for software breakpoint
 	if bp, ok := dbp.Breakpoints[addr]; ok {
-		if _, err := writeMemory(tid, uintptr(bp.Addr), bp.OriginalData); err != nil {
+		if _, err := writeMemory(dbp.taskport, uintptr(bp.Addr), bp.OriginalData); err != nil {
 			return nil, fmt.Errorf("could not clear breakpoint %s", err)
 		}
 		delete(dbp.Breakpoints, addr)

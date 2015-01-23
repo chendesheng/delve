@@ -83,42 +83,6 @@ func Launch(cmd []string) (*DebuggedProcess, error) {
 	return newDebugProcess(proc.Process.Pid, false)
 }
 
-// Returns a new DebuggedProcess struct with sensible defaults.
-func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
-	dbp := DebuggedProcess{
-		Pid:         pid,
-		Threads:     make(map[int]*ThreadContext),
-		Breakpoints: make(map[uint64]*Breakpoint),
-	}
-
-	if attach {
-		thread, err := dbp.AttachThread(pid)
-		if err != nil {
-			return nil, err
-		}
-		dbp.CurrentThread = thread
-	} else {
-		thread, err := dbp.addThread(pid)
-		if err != nil {
-			return nil, err
-		}
-		dbp.CurrentThread = thread
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return nil, err
-	}
-
-	dbp.Process = proc
-	err = dbp.LoadInformation()
-	if err != nil {
-		return nil, err
-	}
-
-	return &dbp, nil
-}
-
 func (dbp *DebuggedProcess) Running() bool {
 	return dbp.running
 }
@@ -214,39 +178,6 @@ func (dbp *DebuggedProcess) PrintThreadInfo() error {
 	return nil
 }
 
-// Steps through process.
-func (dbp *DebuggedProcess) Step() (err error) {
-	var (
-		th *ThreadContext
-		ok bool
-	)
-
-	allm, err := dbp.CurrentThread.AllM()
-	if err != nil {
-		return err
-	}
-
-	fn := func() error {
-		for _, m := range allm {
-			th, ok = dbp.Threads[m.procid]
-			if !ok {
-				th = dbp.Threads[dbp.Pid]
-			}
-
-			if m.blocked == 0 {
-				err := th.Step()
-				if err != nil {
-					return err
-				}
-			}
-
-		}
-		return nil
-	}
-
-	return dbp.run(fn)
-}
-
 // Step over function calls.
 func (dbp *DebuggedProcess) Next() error {
 	var (
@@ -301,6 +232,7 @@ func (dbp *DebuggedProcess) Continue() error {
 		if err != nil {
 			return err
 		}
+		println("trapWait:", wpid)
 		return handleBreakpoint(dbp, wpid)
 	}
 	return dbp.run(fn)

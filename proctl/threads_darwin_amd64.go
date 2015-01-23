@@ -5,6 +5,7 @@ import "C"
 
 import (
 	"errors"
+	"runtime/debug"
 	"unsafe"
 )
 
@@ -16,6 +17,7 @@ func macherr(n C.int) error {
 	if n == 0 { //success
 		return nil
 	} else {
+		println(string(debug.Stack()))
 		return errors.New(C.GoString(C.mach_error_string(C.mach_error_t(n))))
 	}
 }
@@ -53,17 +55,17 @@ func registers(tid int) (Registers, error) {
 	}
 }
 
-func writeMemory(tid int, addr uintptr, data []byte) (int, error) {
-	if err := macherr(C.vmwrite(C.int(tid), C.ulong(addr), unsafe.Pointer(&data[0]), C.int(len(data)))); err != nil {
+func writeMemory(pid int, addr uintptr, data []byte) (int, error) {
+	if err := macherr(C.vmwrite(C.int(pid), C.ulong(addr), unsafe.Pointer(&data[0]), C.int(len(data)))); err != nil {
 		return 0, err
 	} else {
 		return len(data), nil
 	}
 }
 
-func readMemory(tid int, addr uintptr, data []byte) (int, error) {
+func readMemory(pid int, addr uintptr, data []byte) (int, error) {
 	outsize := C.ulong(0)
-	if err := macherr(C.vmread(C.int(tid), C.ulong(addr), C.int(len(data)), unsafe.Pointer(&data[0]), &outsize)); err != nil {
+	if err := macherr(C.vmread(C.int(pid), C.ulong(addr), C.int(len(data)), unsafe.Pointer(&data[0]), &outsize)); err != nil {
 		return 0, err
 	} else {
 		return int(outsize), nil
@@ -71,9 +73,9 @@ func readMemory(tid int, addr uintptr, data []byte) (int, error) {
 
 }
 
-func readByte(tid int, addr uint64) (byte, error) {
+func readByte(pid int, addr uint64) (byte, error) {
 	data := make([]byte, 1, 1)
-	_, err := readMemory(tid, uintptr(addr), data)
+	_, err := readMemory(pid, uintptr(addr), data)
 	if err != nil {
 		return 0, err
 	} else {
@@ -81,10 +83,10 @@ func readByte(tid int, addr uint64) (byte, error) {
 	}
 }
 
-func writeByte(tid int, addr uint64, b byte) error {
+func writeByte(pid int, addr uint64, b byte) error {
 	data := make([]byte, 1, 1)
 	data[0] = b
-	_, err := writeMemory(tid, uintptr(addr), data)
+	_, err := writeMemory(pid, uintptr(addr), data)
 	return err
 }
 
@@ -94,6 +96,8 @@ func clearHardwareBreakpoint(reg, tid int) error {
 }
 
 func singleStep(tid int) error {
+	println("singleStep:", tid)
+
 	regs, err := registers(tid)
 	if err != nil {
 		return err
@@ -104,12 +108,7 @@ func singleStep(tid int) error {
 		return err
 	}
 
-	err = macherr(C.int(C.thread_resume(C.thread_act_t(tid))))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return threadResume(tid)
 }
 
 func ptraceCont(tid int) error {
@@ -123,4 +122,17 @@ func ptraceCont(tid int) error {
 	}
 
 	return macherr(C.int(C.thread_resume(C.thread_act_t(tid))))
+}
+
+func (th *ThreadContext) wait() error {
+	evt := <-th.chTrap
+	return evt.err
+}
+
+func threadSuspend(tid int) error {
+	return macherr(C.int(C.thread_suspend(C.thread_act_t(tid))))
+}
+
+func threadResume(tid int) error {
+	return macherr(C.int(C.threadresume(C.int(tid))))
 }

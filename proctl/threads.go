@@ -14,6 +14,7 @@ type ThreadContext struct {
 	Id      int
 	Process *DebuggedProcess
 	Status  *syscall.WaitStatus
+	threadContext
 }
 
 type Registers interface {
@@ -129,7 +130,7 @@ func (thread *ThreadContext) Step() (err error) {
 		return fmt.Errorf("step failed: %s", err.Error())
 	}
 
-	_, _, err = wait(thread.Id, 0)
+	err = thread.wait()
 	if err != nil {
 		return err
 	}

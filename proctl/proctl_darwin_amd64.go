@@ -9,7 +9,9 @@ import (
 	"debug/macho"
 	"errors"
 	"fmt"
+	"log"
 	"os"
+	"reflect"
 	"syscall"
 	"unsafe"
 )
@@ -32,7 +34,12 @@ type trapEvent struct {
 }
 
 type debuggedProcess struct {
-	chTrap chan *trapEvent
+	taskport int             //mach task port
+	chTrap   chan *trapEvent //notify when mach exception happens
+}
+
+type threadContext struct {
+	chTrap chan *trapEvent //notify when mach exception happens
 }
 
 func (dbp *DebuggedProcess) findExecutable() (exefile, error) {
@@ -43,8 +50,9 @@ func (dbp *DebuggedProcess) findExecutable() (exefile, error) {
 		return exefile{}, errors.New("proc_pidpath error")
 	}
 
-	f, err := os.OpenFile(string(procpath), 0, os.ModePerm)
+	f, err := os.OpenFile(string(procpath[:sz]), 0, 0777)
 	if err != nil {
+		println(err.Error())
 		return exefile{}, err
 	}
 
@@ -63,16 +71,22 @@ func (dbp *DebuggedProcess) findExecutable() (exefile, error) {
 }
 
 func (dbp *DebuggedProcess) addThread(tid int) (*ThreadContext, error) {
-	return nil, errors.New("Not implemented")
+	dbp.Threads[tid] = &ThreadContext{
+		Id:      tid,
+		Process: dbp,
+	}
+	dbp.Threads[tid].chTrap = dbp.chTrap
+
+	return dbp.Threads[tid], nil
 }
 
 func (dbp *DebuggedProcess) AttachThread(tid int) (*ThreadContext, error) {
-	return nil, errors.New("Not implemented")
+	return dbp.addThread(tid)
 }
 
-func addNewThread(dbp *DebuggedProcess, pid int) error {
-	return errors.New("Not implemented")
-}
+//func addNewThread(dbp *DebuggedProcess, pid int) error {
+//	return errors.New("Not implemented")
+//}
 
 func stopped(pid int) bool {
 	return false
@@ -82,8 +96,11 @@ func (dbp *DebuggedProcess) RequestManualStop() {
 }
 
 func waitroutine(dbp *DebuggedProcess) {
-	pid, status, err := wait(dbp.Pid, 0)
-	dbp.chTrap <- &trapEvent{pid, status, err}
+	var status syscall.WaitStatus
+	pid, err := syscall.Wait4(dbp.Pid, &status, 0, nil)
+	if status.Stopped() {
+		dbp.chTrap <- &trapEvent{pid, &status, err}
+	}
 }
 
 func trapWait(dbp *DebuggedProcess, pid int) (int, *syscall.WaitStatus, error) {
@@ -107,15 +124,6 @@ func trapWait(dbp *DebuggedProcess, pid int) (int, *syscall.WaitStatus, error) {
 			return -1, status, ProcessExitedError{wpid}
 		}
 
-		//
-		//		if status.StopSignal() == syscall.SIGTRAP && status.TrapCause() == syscall.PTRACE_EVENT_CLONE {
-		//			err = addNewThread(dbp, wpid)
-		//			if err != nil {
-		//				return -1, nil, err
-		//			}
-		//			continue
-		//		}
-
 		if status.StopSignal() == syscall.SIGTRAP {
 			return wpid, status, nil
 		}
@@ -136,8 +144,128 @@ func wait(pid, options int) (int, *syscall.WaitStatus, error) {
 func stopTheWorld(dbp *DebuggedProcess) error {
 	// Loop through all threads and ensure that we stop all of them
 	for _, th := range dbp.Threads {
-		return macherr(C.int(C.thread_suspend(C.thread_act_t(th.Id))))
+		return threadSuspend(th.Id)
 	}
 
 	return nil
+}
+
+var fnCatchExceptionRaise func(C.int, C.int, C.exception_type_t, C.exception_data_t, C.mach_msg_type_number_t) int
+
+//export catch_exception_raise
+func catch_exception_raise(eport C.int, thread C.int, task C.int, exception C.exception_type_t,
+	code C.exception_data_t, ncode C.mach_msg_type_number_t) C.int {
+
+	log.Print("[exception rise]task:", task, " thread:", thread)
+	return C.int(fnCatchExceptionRaise(task, thread, exception, code, ncode))
+}
+
+// Returns a new DebuggedProcess struct with sensible defaults.
+func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
+	dbp := DebuggedProcess{
+		Pid:         pid,
+		Threads:     make(map[int]*ThreadContext),
+		Breakpoints: make(map[uint64]*Breakpoint),
+	}
+	dbp.chTrap = make(chan *trapEvent)
+	for i, _ := range dbp.HWBreakpoints {
+		dbp.HWBreakpoints[i] = new(Breakpoint)
+	}
+
+	pths := uintptr(0)
+	nth := 0
+	err := macherr(C.attach(C.int(pid), (*C.int)(unsafe.Pointer(&dbp.taskport)), (**C.int)(unsafe.Pointer(&pths)), (*C.int)(unsafe.Pointer(&nth))))
+	if err != nil {
+		return nil, err
+	}
+
+	threads := make([]int, nth)
+	head := (*reflect.SliceHeader)(unsafe.Pointer(&threads))
+	head.Data = pths
+	head.Len = nth
+	head.Cap = nth
+
+	for _, tid := range threads {
+		threadSuspend(tid)
+		dbp.CurrentThread, _ = dbp.addThread(tid)
+	}
+	log.Printf("threads:%v", threads)
+
+	fnCatchExceptionRaise = func(task C.int, thread C.int, exception C.exception_type_t, code C.exception_data_t, ncode C.mach_msg_type_number_t) int {
+		tid := int(thread)
+		err := threadSuspend(tid)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		status := syscall.WaitStatus(0)
+		if exception == 6 {
+			status = 0x57f //simulate stop trap
+		}
+		evt := &trapEvent{tid, &status, nil}
+		//dbp.chTrap <- evt
+		if _, ok := dbp.Threads[tid]; !ok {
+			dbp.addThread(tid)
+		}
+		dbp.Threads[tid].chTrap <- evt
+
+		//regs, _ := th.GetRegs()
+		//log.Printf("exp:%d, rip:0x%x", exp, regs.Rip())
+
+		//log.Printf("regs:%#v", regs)
+		//log.Printf("rip:0x%x", regs.Rip())
+		return 0
+	}
+
+	go waitroutine(&dbp)
+	go C.server()
+
+	//	if attach {
+	//		thread, err := dbp.AttachThread(pid)
+	//		if err != nil {
+	//			return nil, err
+	//		}
+	//		dbp.CurrentThread = thread
+	//	} else {
+	//		thread, err := dbp.addThread(pid)
+	//		if err != nil {
+	//			return nil, err
+	//		}
+	//		dbp.CurrentThread = thread
+	//	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return nil, err
+	}
+
+	dbp.Process = proc
+
+	//only use ptrace for startup
+	err = syscall.PtraceDetach(pid)
+	if err != nil {
+		return nil, err
+	}
+
+	err = dbp.LoadInformation()
+	if err != nil {
+		return nil, err
+	}
+
+	return &dbp, nil
+}
+
+// Steps through process.
+func (dbp *DebuggedProcess) Step() (err error) {
+	fn := func() error {
+		for _, th := range dbp.Threads {
+			err := th.Step()
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return dbp.run(fn)
 }

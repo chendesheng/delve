@@ -735,17 +735,6 @@ func (thread *ThreadContext) readFloat(addr uintptr, size int64) (string, error)
 	return "", fmt.Errorf("could not read float")
 }
 
-func (thread *ThreadContext) readMemory(addr uintptr, size uintptr) ([]byte, error) {
-	buf := make([]byte, size)
-
-	_, err := readMemory(thread.Id, addr, buf)
-	if err != nil {
-		return nil, err
-	}
-
-	return buf, nil
-}
-
 // Fetches all variables of a specific type in the current function scope
 func (thread *ThreadContext) variablesByTag(tag dwarf.Tag) ([]*Variable, error) {
 	pc, err := thread.CurrentPC()

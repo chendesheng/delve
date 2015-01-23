@@ -96,7 +96,7 @@ int threadinfo(int tid, thread_basic_info_t info) {
         return KERN_SUCCESS;
 }
 
-int setexcport(int tid) {
+int setexcport(int pid) {
         if (excport == 0) {
                 extern mach_port_t mach_reply_port(void);
                 excport = mach_reply_port();
@@ -105,35 +105,45 @@ int setexcport(int tid) {
                 CHECK_KRET(kret);
         }
 
-        kern_return_t kret = thread_set_exception_ports(tid, ExcMask,
+        kern_return_t kret = task_set_exception_ports(pid, ExcMask,
                         excport, EXCEPTION_DEFAULT, MACHINE_THREAD_STATE);
         CHECK_KRET(kret);
 
         return KERN_SUCCESS;
 }
 
-int attach(int pid, int* task) {
+int attach(int pid, int* task, int** ths, int* nth) {
         kern_return_t kret = gettask(pid, task);
         CHECK_KRET2(kret);
 
-        int* ths;
-        int nth;
-        getthreads(*task, &ths, &nth);
+        getthreads(*task, ths, nth);
 
-        int i = 0;
-        for (i = 0; i < nth; i++) {
-                kret = setexcport(ths[i]);
-                if (kret != KERN_SUCCESS) {
-                        printf("set exception ports error");
-                }
-        }
-
+        kret = setexcport(*task);
+        CHECK_KRET2(kret);
         return KERN_SUCCESS;
 }
 
 int detach(int pid) {
         //TODO
         return 0;
+}
+
+//make sure thread is resumed
+int threadresume(int tid) {
+        int i;
+        int kret;
+        struct thread_basic_info info;
+        uint size = sizeof info;
+
+        kret = thread_info(tid, THREAD_BASIC_INFO, (thread_info_t)&info, &size);
+        CHECK_KRET(kret)
+
+        for (i = 0; i < info.suspend_count; i++) {
+                kret = thread_resume(tid);
+                CHECK_KRET(kret);
+        } 
+
+        return KERN_SUCCESS;
 }
 
 //gcc os_darwin.c -o tfpexample -framework Security -framework CoreFoundation
