@@ -160,7 +160,7 @@ var fnCatchExceptionRaise func(C.int, C.int, C.exception_type_t, C.exception_dat
 func catch_exception_raise(eport C.int, thread C.int, task C.int, exception C.exception_type_t,
 	code C.exception_data_t, ncode C.mach_msg_type_number_t) C.int {
 
-	log.Print("[exception rise]task:", task, " thread:", thread)
+	//log.Print("[exception rise]task:", task, " thread:", thread)
 	return C.int(fnCatchExceptionRaise(task, thread, exception, code, ncode))
 }
 

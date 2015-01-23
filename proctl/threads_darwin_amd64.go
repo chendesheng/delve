@@ -96,8 +96,6 @@ func clearHardwareBreakpoint(reg, tid int) error {
 }
 
 func singleStep(tid int) error {
-	println("singleStep:", tid)
-
 	regs, err := registers(tid)
 	if err != nil {
 		return err
