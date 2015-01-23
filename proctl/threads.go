@@ -244,8 +244,10 @@ func (thread *ThreadContext) ReturnAddressFromOffset(offset int64) uint64 {
 	}
 
 	retaddr := int64(regs.SP()) + offset
-	data := make([]byte, 8)
-	readMemory(thread.Id, uintptr(retaddr), data)
+	data, err := thread.readMemory(uintptr(retaddr), 8)
+	if err != nil {
+		panic("Could not read from memory")
+	}
 	return binary.LittleEndian.Uint64(data)
 }
 

@@ -264,7 +264,7 @@ func TestNext(t *testing.T) {
 			t.Fatal("Not all breakpoints were cleaned up", len(p.HWBreakpoints))
 		}
 		for _, bp := range p.HWBreakpoints {
-			if bp != nil {
+			if bp != nil && bp.Addr != 0 {
 				t.Fatal("Not all breakpoints were cleaned up", bp.Addr)
 			}
 		}

@@ -178,46 +178,6 @@ func (dbp *DebuggedProcess) PrintThreadInfo() error {
 	return nil
 }
 
-// Step over function calls.
-func (dbp *DebuggedProcess) Next() error {
-	var (
-		th *ThreadContext
-		ok bool
-	)
-
-	allm, err := dbp.CurrentThread.AllM()
-	if err != nil {
-		return err
-	}
-
-	fn := func() error {
-		for _, m := range allm {
-			th, ok = dbp.Threads[m.procid]
-			if !ok {
-				th = dbp.Threads[dbp.Pid]
-			}
-
-			if m.blocked == 1 {
-				// Continue any blocked M so that the
-				// scheduler can continue to do its'
-				// job correctly.
-				err := th.Continue()
-				if err != nil {
-					return err
-				}
-				continue
-			}
-
-			err := th.Next()
-			if err != nil && err != syscall.ESRCH {
-				return err
-			}
-		}
-		return stopTheWorld(dbp)
-	}
-	return dbp.run(fn)
-}
-
 // Resume process.
 func (dbp *DebuggedProcess) Continue() error {
 	for _, thread := range dbp.Threads {

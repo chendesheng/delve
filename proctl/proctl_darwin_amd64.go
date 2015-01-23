@@ -272,3 +272,17 @@ func (dbp *DebuggedProcess) Step() (err error) {
 
 	return dbp.run(fn)
 }
+
+// Step over function calls.
+func (dbp *DebuggedProcess) Next() error {
+	fn := func() error {
+		for _, th := range dbp.Threads {
+			if err := th.Next(); err != nil {
+				return err
+			}
+		}
+		return stopTheWorld(dbp)
+	}
+
+	return dbp.run(fn)
+}
