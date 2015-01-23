@@ -124,7 +124,7 @@ int setexcport(int pid) {
         return KERN_SUCCESS;
 }
 
-int attach(int pid, int** ths, int* nth) {
+int attach(int pid, void* ths, int* nth) {
         int task;
         kern_return_t kret = gettask(pid, &task);
         CHECK_KRET2(kret);

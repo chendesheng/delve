@@ -327,3 +327,25 @@ func (dbp *DebuggedProcess) Next() error {
 	}
 	return dbp.run(fn)
 }
+
+func Attach(pid int) (*DebuggedProcess, error) {
+	dbp, err := newDebugProcess(pid, true)
+	if err != nil {
+		return nil, err
+	}
+	// Attach to all currently active threads.
+	allm, err := dbp.CurrentThread.AllM()
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range allm {
+		if m.procid == 0 {
+			continue
+		}
+		_, err := dbp.AttachThread(m.procid)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return dbp, nil
+}

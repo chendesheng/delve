@@ -62,6 +62,7 @@ func (dbp *DebuggedProcess) findExecutable() (exefile, error) {
 
 	data, err := machofile.DWARF()
 	if err != nil {
+		log.Print(err)
 		return exefile{}, err
 	}
 	dbp.Dwarf = data
@@ -177,22 +178,28 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 
 	pths := uintptr(0)
 	nth := 0
-	err := macherr(C.attach(C.int(pid), (**C.int)(unsafe.Pointer(&pths)), (*C.int)(unsafe.Pointer(&nth))))
+	err := macherr(C.attach(C.int(pid), unsafe.Pointer(&pths), (*C.int)(unsafe.Pointer(&nth))))
 	if err != nil {
 		return nil, err
 	}
 
-	threads := make([]int, nth)
+	threads := make([]int32, nth)
 	head := (*reflect.SliceHeader)(unsafe.Pointer(&threads))
 	head.Data = pths
 	head.Len = nth
 	head.Cap = nth
 
-	for _, tid := range threads {
-		threadSuspend(tid)
+	log.Printf("threads:%#v", threads)
+	for _, t := range threads {
+		tid := int(t)
+		if tid == 0 {
+			continue
+		}
+		if err := threadSuspend(tid); err != nil {
+			return nil, err
+		}
 		dbp.CurrentThread, _ = dbp.addThread(tid)
 	}
-	log.Printf("threads:%v", threads)
 
 	fnCatchExceptionRaise = func(task C.int, thread C.int, exception C.exception_type_t, code C.exception_data_t, ncode C.mach_msg_type_number_t) int {
 		tid := int(thread)
@@ -244,10 +251,12 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 
 	dbp.Process = proc
 
-	//only use ptrace for startup
-	err = syscall.PtraceDetach(pid)
-	if err != nil {
-		return nil, err
+	if !attach {
+		//only use ptrace for startup
+		err = syscall.PtraceDetach(pid)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = dbp.LoadInformation()
@@ -285,4 +294,13 @@ func (dbp *DebuggedProcess) Next() error {
 	}
 
 	return dbp.run(fn)
+}
+
+func Attach(pid int) (*DebuggedProcess, error) {
+	dbp, err := newDebugProcess(pid, true)
+	if err != nil {
+		return nil, err
+	}
+
+	return dbp, nil
 }

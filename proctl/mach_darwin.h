@@ -13,7 +13,7 @@ int getregs(int tid, Regs* regs);
 int setregs(int tid, Regs* regs);
 int vmread(int pid, ulong addr, int size, void* data, ulong* outsz);
 int vmwrite(int pid, ulong addr, void* data, int sz);
-int attach(int pid, int** ths, int* nth);
+int attach(int pid, void* ths, int* nth);
 int detach(int pid);
 void server();
 int threadresume(int tid);
