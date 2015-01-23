@@ -28,7 +28,7 @@ type exefile struct {
 }
 
 type trapEvent struct {
-	tid    int
+	id     int
 	status *syscall.WaitStatus
 	err    error
 }
@@ -96,17 +96,20 @@ func (dbp *DebuggedProcess) RequestManualStop() {
 }
 
 func waitroutine(dbp *DebuggedProcess) {
-	var status syscall.WaitStatus
-	pid, err := syscall.Wait4(dbp.Pid, &status, 0, nil)
-	if status.Stopped() {
-		dbp.chTrap <- &trapEvent{pid, &status, err}
+	for {
+		var status syscall.WaitStatus
+		pid, err := syscall.Wait4(dbp.Pid, &status, 0, nil)
+		if status.Exited() {
+			dbp.chTrap <- &trapEvent{pid, &status, err}
+			return
+		}
 	}
 }
 
 func trapWait(dbp *DebuggedProcess, pid int) (int, *syscall.WaitStatus, error) {
 	for {
 		evt := <-dbp.chTrap
-		wpid, status, err := evt.tid, evt.status, evt.err
+		wpid, status, err := evt.id, evt.status, evt.err
 
 		if err != nil {
 			return -1, nil, fmt.Errorf("wait err %s %d", err, pid)
@@ -121,6 +124,7 @@ func trapWait(dbp *DebuggedProcess, pid int) (int, *syscall.WaitStatus, error) {
 		}
 
 		if status.Exited() && wpid == dbp.Pid {
+			dbp.CurrentThread.Status = status
 			return -1, status, ProcessExitedError{wpid}
 		}
 
