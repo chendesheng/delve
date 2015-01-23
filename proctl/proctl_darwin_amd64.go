@@ -34,8 +34,7 @@ type trapEvent struct {
 }
 
 type debuggedProcess struct {
-	taskport int             //mach task port
-	chTrap   chan *trapEvent //notify when mach exception happens
+	chTrap chan *trapEvent //notify when mach exception happens
 }
 
 type threadContext struct {
@@ -178,7 +177,7 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 
 	pths := uintptr(0)
 	nth := 0
-	err := macherr(C.attach(C.int(pid), (*C.int)(unsafe.Pointer(&dbp.taskport)), (**C.int)(unsafe.Pointer(&pths)), (*C.int)(unsafe.Pointer(&nth))))
+	err := macherr(C.attach(C.int(pid), (**C.int)(unsafe.Pointer(&pths)), (*C.int)(unsafe.Pointer(&nth))))
 	if err != nil {
 		return nil, err
 	}

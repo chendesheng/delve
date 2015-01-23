@@ -123,7 +123,7 @@ func TestBreakpoint(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if pc != breakpc {
+		if pc != breakpc && pc-1 != breakpc { //if use HWBreakpoints pc == breakpc, if use 0xcc pc-1==breakpc
 			f, l, _ := p.GoSymTable.PCToLine(pc)
 			t.Fatalf("Break not respected:\nPC:%#v %s:%d\nFN:%#v \n", pc, f, l, breakpc)
 		}

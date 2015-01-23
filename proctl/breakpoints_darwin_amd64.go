@@ -25,10 +25,10 @@ func (dbp *DebuggedProcess) setBreakpoint(tid int, addr uint64) (*Breakpoint, er
 	// Fall back to software breakpoint. 0xCC is INT 3, software
 	// breakpoint trap interrupt.
 	originalData := make([]byte, 1)
-	if _, err := readMemory(dbp.taskport, uintptr(addr), originalData); err != nil {
+	if _, err := readMemory(dbp.Pid, uintptr(addr), originalData); err != nil {
 		return nil, err
 	}
-	_, err := writeMemory(dbp.taskport, uintptr(addr), []byte{0xCC})
+	_, err := writeMemory(dbp.Pid, uintptr(addr), []byte{0xCC})
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func (dbp *DebuggedProcess) clearBreakpoint(tid int, addr uint64) (*Breakpoint, 
 	}
 	// Check for software breakpoint
 	if bp, ok := dbp.Breakpoints[addr]; ok {
-		if _, err := writeMemory(dbp.taskport, uintptr(bp.Addr), bp.OriginalData); err != nil {
+		if _, err := writeMemory(dbp.Pid, uintptr(bp.Addr), bp.OriginalData); err != nil {
 			return nil, fmt.Errorf("could not clear breakpoint %s", err)
 		}
 		delete(dbp.Breakpoints, addr)

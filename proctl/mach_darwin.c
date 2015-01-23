@@ -52,15 +52,27 @@ int setregs(int tid, Regs* regs) {
         return KERN_SUCCESS;
 }
 
-int vmread(int task, ulong addr, int size, void* data, ulong* outsz) {
-        kern_return_t kret = vm_read_overwrite(task, addr, size, (mach_vm_address_t)data, outsz);
+int vmread(int pid, ulong addr, int size, void* data, ulong* outsz) {
+        int task;
+        kern_return_t kret;
+
+        kret = gettask(pid, &task);
+        CHECK_KRET(kret);
+
+        kret = vm_read_overwrite(task, addr, size, (mach_vm_address_t)data, outsz);
         CHECK_KRET(kret);
 
         return KERN_SUCCESS;
 }
 
-int vmwrite(int task, ulong addr, void* data, int sz) {
-        kern_return_t kret = vm_write(task, addr, (mach_vm_address_t)data, sz);
+int vmwrite(int pid, ulong addr, void* data, int sz) {
+        int task;
+        kern_return_t kret;
+
+        kret = gettask(pid, &task);
+        CHECK_KRET(kret);
+
+        kret = vm_write(task, addr, (mach_vm_address_t)data, sz);
         if (kret == KERN_INVALID_ADDRESS) {
                 kret = vm_protect(task, addr, sz, 0, VM_PROT_WRITE|VM_PROT_READ|VM_PROT_EXECUTE);
                 CHECK_KRET(kret);
@@ -112,13 +124,14 @@ int setexcport(int pid) {
         return KERN_SUCCESS;
 }
 
-int attach(int pid, int* task, int** ths, int* nth) {
-        kern_return_t kret = gettask(pid, task);
+int attach(int pid, int** ths, int* nth) {
+        int task;
+        kern_return_t kret = gettask(pid, &task);
         CHECK_KRET2(kret);
 
-        getthreads(*task, ths, nth);
+        getthreads(task, ths, nth);
 
-        kret = setexcport(*task);
+        kret = setexcport(task);
         CHECK_KRET2(kret);
         return KERN_SUCCESS;
 }
