@@ -317,9 +317,15 @@ func TestFindReturnAddress(t *testing.T) {
 		readMemory(p.Pid, uintptr(addr), data)
 		addr = binary.LittleEndian.Uint64(data)
 
-		expected := uint64(0x400fbc)
-		if addr != expected {
-			t.Fatalf("return address not found correctly, expected %#v got %#v", expected, addr)
+		f, l, fn := gsd.PCToLine(addr)
+		println(f, ":", l, " ", fn.Name)
+
+		if l != 41 {
+			t.Fatalf("return address not found correctly, expected line 41 got %d", l)
+		}
+
+		if fn.Name != "main.main" {
+			t.Fatalf("return function not found correctly, expected main.main got %s", fn.Name)
 		}
 	})
 }
