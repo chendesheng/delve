@@ -105,10 +105,7 @@ func handleExit(dbp *proctl.DebuggedProcess, status int) {
 	}
 
 	fmt.Println("Detaching from process...")
-	err := syscall.PtraceDetach(dbp.Process.Pid)
-	if err != nil {
-		die(2, "Could not detach", err)
-	}
+	dbp.Detach()
 
 	if answer == "y" {
 		fmt.Println("Killing process", dbp.Process.Pid)

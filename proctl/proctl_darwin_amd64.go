@@ -304,3 +304,7 @@ func Attach(pid int) (*DebuggedProcess, error) {
 
 	return dbp, nil
 }
+
+func (dbp *DebuggedProcess) Detach() error {
+	return macherr(C.int(C.detach(C.int(dbp.Pid))))
+}

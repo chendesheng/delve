@@ -349,3 +349,7 @@ func Attach(pid int) (*DebuggedProcess, error) {
 	}
 	return dbp, nil
 }
+
+func (dbp *DebuggedProcess) Detach() error {
+	return syscall.PtraceDetach(dbp.Process.Pid)
+}

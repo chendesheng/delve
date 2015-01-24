@@ -15,12 +15,7 @@ enum {
 
 static mach_port_t excport = 0;
 
-#define CHECK_KRET(a) if ((a) != KERN_SUCCESS) {\
-        printf("line %d: kernal failed with message %s!\n", __LINE__, mach_error_string((a)));\
-        return (a);\
-}
-#define CHECK_KRET2(a) if ((a) != KERN_SUCCESS) {return (a);}
-
+#define CHECK_KRET(a) if ((a) != KERN_SUCCESS) {return (a);}
 
 int gettask(int pid, int* task) {
         kern_return_t kret = task_for_pid(mach_task_self(), pid, (mach_port_t*)task);
@@ -108,7 +103,7 @@ int threadinfo(int tid, thread_basic_info_t info) {
         return KERN_SUCCESS;
 }
 
-int setexcport(int pid) {
+int setexcport(int task) {
         if (excport == 0) {
                 extern mach_port_t mach_reply_port(void);
                 excport = mach_reply_port();
@@ -117,7 +112,7 @@ int setexcport(int pid) {
                 CHECK_KRET(kret);
         }
 
-        kern_return_t kret = task_set_exception_ports(pid, ExcMask,
+        kern_return_t kret = task_set_exception_ports(task, ExcMask,
                         excport, EXCEPTION_DEFAULT, MACHINE_THREAD_STATE);
         CHECK_KRET(kret);
 
@@ -127,18 +122,25 @@ int setexcport(int pid) {
 int attach(int pid, void* ths, int* nth) {
         int task;
         kern_return_t kret = gettask(pid, &task);
-        CHECK_KRET2(kret);
+        CHECK_KRET(kret);
 
         getthreads(task, ths, nth);
 
         kret = setexcport(task);
-        CHECK_KRET2(kret);
+        CHECK_KRET(kret);
         return KERN_SUCCESS;
 }
 
 int detach(int pid) {
-        //TODO
-        return 0;
+        int task;
+        kern_return_t kret = gettask(pid, &task);
+        CHECK_KRET(kret);
+
+        kret = task_set_exception_ports(task, 0,
+                        0, EXCEPTION_DEFAULT, MACHINE_THREAD_STATE);
+        CHECK_KRET(kret);
+
+        return KERN_SUCCESS;
 }
 
 //make sure thread is resumed
