@@ -87,5 +87,5 @@ func (a Addr) Less(item rbtree.Item) bool {
 
 func (a Addr) More(item rbtree.Item) bool {
 	f := item.(*FrameDescriptionEntry)
-	return uint64(a) > f.End()
+	return uint64(a) >= f.End() //open end: [begin, begin+end)
 }

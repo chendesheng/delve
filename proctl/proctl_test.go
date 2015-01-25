@@ -329,3 +329,29 @@ func TestFindReturnAddress(t *testing.T) {
 		}
 	})
 }
+
+func TestNext2(t *testing.T) {
+	var testfile, _ = filepath.Abs("../_fixtures/testprog")
+
+	withTestProcess(testfile, t, func(p *DebuggedProcess) {
+		start, _, err := p.GoSymTable.LineToPC(testfile+".go", 16)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = p.Break(start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Continue()
+
+		if err := p.Next(); err != nil {
+			t.Fatal(err)
+		}
+
+		_, cl := currentLineNumber(p, t)
+		if cl != 18 {
+			t.Fatalf("Expect pc at line %d but %d", 18, cl)
+		}
+	})
+}
