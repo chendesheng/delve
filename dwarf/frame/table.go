@@ -126,8 +126,10 @@ func executeCIEInstructions(cie *CommonInformationEntry) *FrameContext {
 		prevRegs:      make(map[uint64]DWRule),
 		codeAlignment: cie.CodeAlignmentFactor,
 		dataAlignment: cie.DataAlignmentFactor,
-		buf:           bytes.NewBuffer(cie.InitialInstructions),
+		buf:           new(bytes.Buffer),
 	}
+
+	frame.buf.Write(cie.InitialInstructions)
 
 	frame.ExecuteDwarfProgram()
 	return frame
@@ -138,8 +140,8 @@ func executeDwarfProgramUntilPC(fde *FrameDescriptionEntry, pc uint64) *FrameCon
 	frame := executeCIEInstructions(fde.CIE)
 	frame.loc = fde.Begin()
 	frame.address = pc
-	frame.ExecuteUntilPC(fde.Instructions)
 
+	frame.ExecuteUntilPC(fde.Instructions)
 	return frame
 }
 

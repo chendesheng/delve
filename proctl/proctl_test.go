@@ -355,3 +355,38 @@ func TestNext2(t *testing.T) {
 		}
 	})
 }
+
+func TestNext3(t *testing.T) {
+	var testfile, _ = filepath.Abs("../_fixtures/testprog")
+
+	withTestProcess(testfile, t, func(p *DebuggedProcess) {
+		start, _, err := p.GoSymTable.LineToPC(testfile+".go", 9)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = p.Break(start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Continue()
+
+		nextCheckLinenext(p, t, 10)
+		nextCheckLinenext(p, t, 19)
+	})
+}
+
+func nextCheckLinenext(p *DebuggedProcess, t *testing.T, expectedline int) {
+	_, cl := next(p, t)
+	if cl != expectedline {
+		t.Fatalf("Expect pc at line %d but %d", expectedline, cl)
+	}
+}
+
+func next(p *DebuggedProcess, t *testing.T) (string, int) {
+	if err := p.Next(); err != nil {
+		t.Fatal(err)
+	}
+
+	return currentLineNumber(p, t)
+}
