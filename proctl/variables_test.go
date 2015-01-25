@@ -202,3 +202,26 @@ func TestLocalVariables(t *testing.T) {
 		}
 	})
 }
+
+func TestArguments(t *testing.T) {
+	executablePath := "../_fixtures/testvariables"
+
+	withTestProcess(executablePath, t, func(p *DebuggedProcess) {
+		fnfoobar := p.GoSymTable.LookupFunc("main.foobar")
+
+		p.Break(fnfoobar.Entry)
+		p.Continue()
+		p.Next()
+
+		v, err := p.EvalSymbol("bar")
+		if err != nil {
+			t.Error(err)
+		}
+
+		expected := "main.FooBar {Baz: 10, Bur: lorem}"
+		if v.Value != expected {
+			t.Errorf("Expect value \"%s\" but \"%s\"", expected, v.Value)
+		}
+
+	})
+}
