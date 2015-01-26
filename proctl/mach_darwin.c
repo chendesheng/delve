@@ -1,16 +1,12 @@
 #include "mach_darwin.h"
 #include "_cgo_export.h"
 
-//#include   <unistd.h>
-//#define USED(v)
-
-
 enum {
         ExcMask = EXC_MASK_BAD_ACCESS |
-                EXC_MASK_BAD_INSTRUCTION |
-                EXC_MASK_ARITHMETIC |
-                EXC_MASK_BREAKPOINT |
-                EXC_MASK_SOFTWARE
+                  EXC_MASK_BAD_INSTRUCTION |
+                  EXC_MASK_ARITHMETIC |
+                  EXC_MASK_BREAKPOINT |
+                  EXC_MASK_SOFTWARE
 };
 
 static mach_port_t excport = 0;
@@ -80,14 +76,6 @@ int vmwrite(int pid, ulong addr, void* data, int sz) {
 
         return KERN_SUCCESS;
 }
-
-// Callback for exc_server below.  Called when a thread we are
-// watching has an exception like hitting a breakpoint.
-//kern_return_t catch_exception_raise(mach_port_t eport, mach_port_t thread,
-//        mach_port_t task, exception_type_t exception,
-//        exception_data_t code, mach_msg_type_number_t ncode) {
-//        return onCatchExceptionRaise(eport, thread, task, exception, code, ncode);
-//}
 
 //wait for exception/signal
 void server() {
@@ -161,75 +149,39 @@ int threadresume(int tid) {
         return KERN_SUCCESS;
 }
 
-//gcc os_darwin.c -o tfpexample -framework Security -framework CoreFoundation
-//int main() {
-int test() {
-//        int task;
-//        int kret;
-//
-//        byte data;
-//        ulong sz;
-//
-//        byte cc = 0xcc;
-//        int pid = 10867;
-//        int tid;
-//
-//        pthread_t p;
-//        int* thrs;
-//        int nthrs;
-//
-//        mach_msg_type_number_t stateCount = x86_THREAD_STATE64_COUNT;
-//
-//        kret = getTask(pid, &task);
-//        CHECK_KRET(kret);
-//
-//        printf("task:%d\n", task);
-//
-//        excport = mach_reply_port();
-//        pthread_mutex_init(&mu, NULL);
-//        pthread_cond_init(&cond, NULL);
-//
-//        pthread_create(&p, NULL, excthread, NULL);
-//        kret = mach_port_insert_right(mach_task_self(), excport, excport, MACH_MSG_TYPE_MAKE_SEND);
-//        CHECK_KRET(kret);
-////        kret = task_set_exception_ports(task, ExcMask,
-////                        excport, EXCEPTION_DEFAULT, MACHINE_THREAD_STATE);
-////        CHECK_KRET(kret);
-//
-//
-//        kret = getThreads(task, &thrs, &nthrs);
-//        CHECK_KRET(kret);
-//
-//        printf("nthrs:%d\n", nthrs);
-//
-//        for (int i = 0; i < nthrs; i++) {
-//                tid = thrs[i];
-//                printf("tid:%d\n", tid);
-//                kret = mach_port_insert_right(mach_task_self(), excport, excport, MACH_MSG_TYPE_MAKE_SEND);
-//                CHECK_KRET(kret);
-//
-//                kret = thread_set_exception_ports(tid, ExcMask,
-//                                excport, EXCEPTION_DEFAULT, MACHINE_THREAD_STATE);
-//                CHECK_KRET(kret);
-//
-//                kret = thread_suspend(tid);
-//                CHECK_KRET(kret);
-//                
-//                Regs regs = {0};
-//                kret = getRegs(tid, &regs);
-//                CHECK_KRET(kret);
-//
-//                char data[] = {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc};
-//                kret = writeMemory(task, regs.__rip, data, sizeof(data));
-//                CHECK_KRET(kret);
-//
-//                kret = thread_resume(tid);
-//                CHECK_KRET(kret);
-//        }
-//
-//
-//        sleep(1000000);
-//
-        return 0;
+int tasksuspend(int pid) {
+        int task;
+        kern_return_t kret;
+
+        kret = gettask(pid, &task);
+        CHECK_KRET(kret);
+
+        printf("tasksuspend\n");
+
+        kret = task_suspend(task);
+        CHECK_KRET(kret);
+
+        return KERN_SUCCESS;
 }
 
+
+int taskresume(int pid) {
+        int task;
+        int kret;
+        struct task_basic_info info;
+        uint size = sizeof info;
+        int i;
+
+        kret = gettask(pid, &task);
+        CHECK_KRET(kret);
+
+        kret = task_info(task, TASK_BASIC_INFO, (task_info_t)&info, &size);
+        CHECK_KRET(kret)
+
+        for (i = 0; i < info.suspend_count; i++) {
+                kret = task_resume(task);
+                CHECK_KRET(kret);
+        } 
+
+        return KERN_SUCCESS;
+}

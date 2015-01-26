@@ -25,9 +25,6 @@ type exefile struct {
 	*elf.File
 }
 
-type debuggedProcess struct {
-}
-
 func (dbp *DebuggedProcess) addThread(tid int) (*ThreadContext, error) {
 	err := syscall.PtraceSetOptions(tid, syscall.PTRACE_O_TRACECLONE)
 	if err == syscall.ESRCH {
@@ -250,6 +247,25 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	}
 
 	return &dbp, nil
+}
+
+// Resume process.
+func (dbp *DebuggedProcess) Continue() error {
+	for _, thread := range dbp.Threads {
+		err := thread.Continue()
+		if err != nil {
+			return err
+		}
+	}
+
+	fn := func() error {
+		wpid, _, err := trapWait(dbp, -1)
+		if err != nil {
+			return err
+		}
+		return handleBreakPoint(dbp, wpid)
+	}
+	return dbp.run(fn)
 }
 
 // Steps through process.

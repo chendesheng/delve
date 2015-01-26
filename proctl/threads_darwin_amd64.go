@@ -95,7 +95,7 @@ func clearHardwareBreakpoint(reg, tid int) error {
 	return nil
 }
 
-func singleStep(tid int) error {
+func singleStep(pid int, tid int) error {
 	regs, err := registers(tid)
 	if err != nil {
 		return err
@@ -106,10 +106,10 @@ func singleStep(tid int) error {
 		return err
 	}
 
-	return threadResume(tid)
+	return taskResume(pid)
 }
 
-func ptraceCont(tid int) error {
+func ptraceCont(pid int, tid int) error {
 	regs, err := registers(tid)
 	if err != nil {
 		return err
@@ -119,18 +119,11 @@ func ptraceCont(tid int) error {
 		regs.SetRflags(tid, rflags&^FLAGS_TF)
 	}
 
-	return macherr(C.int(C.thread_resume(C.thread_act_t(tid))))
+	//return macherr(C.int(C.thread_resume(C.thread_act_t(tid))))
+	return taskResume(pid)
 }
 
 func (th *ThreadContext) wait() error {
-	evt := <-th.chTrap
+	evt := <-th.Process.chTrap
 	return evt.err
-}
-
-func threadSuspend(tid int) error {
-	return macherr(C.int(C.thread_suspend(C.thread_act_t(tid))))
-}
-
-func threadResume(tid int) error {
-	return macherr(C.int(C.threadresume(C.int(tid))))
 }

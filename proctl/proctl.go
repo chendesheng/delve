@@ -156,26 +156,6 @@ func (dbp *DebuggedProcess) PrintThreadInfo() error {
 	return nil
 }
 
-// Resume process.
-func (dbp *DebuggedProcess) Continue() error {
-	for _, thread := range dbp.Threads {
-		err := thread.Continue()
-		if err != nil {
-			return err
-		}
-	}
-
-	fn := func() error {
-		wpid, _, err := trapWait(dbp, -1)
-		if err != nil {
-			return err
-		}
-		println("trapWait:", wpid)
-		return handleBreakpoint(dbp, wpid)
-	}
-	return dbp.run(fn)
-}
-
 // Obtains register values from what Delve considers to be the current
 // thread of the traced process.
 func (dbp *DebuggedProcess) Registers() (Registers, error) {

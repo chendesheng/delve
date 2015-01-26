@@ -17,5 +17,6 @@ int attach(int pid, void* ths, int* nth);
 int detach(int pid);
 void server();
 int threadresume(int tid);
-
+int tasksuspend(int pid);
+int taskresume(int pid);
 #endif

@@ -5,9 +5,6 @@ import (
 	"syscall"
 )
 
-type threadContext struct {
-}
-
 func (th *ThreadContext) wait() error {
 	_, _, err := wait(th.Id, 0)
 	return err

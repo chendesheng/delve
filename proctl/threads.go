@@ -14,7 +14,6 @@ type ThreadContext struct {
 	Id      int
 	Process *DebuggedProcess
 	Status  *syscall.WaitStatus
-	threadContext
 }
 
 type Registers interface {
@@ -94,7 +93,7 @@ func (thread *ThreadContext) Continue() error {
 		}
 	}
 
-	return ptraceCont(thread.Id)
+	return ptraceCont(thread.Process.Pid, thread.Id)
 }
 
 // Single steps this thread a single instruction, ensuring that
@@ -125,7 +124,7 @@ func (thread *ThreadContext) Step() (err error) {
 		}()
 	}
 
-	err = singleStep(thread.Id)
+	err = singleStep(thread.Process.Pid, thread.Id)
 	if err != nil {
 		return fmt.Errorf("step failed: %s", err.Error())
 	}
@@ -224,6 +223,7 @@ func (thread *ThreadContext) continueToReturnAddress(pc uint64, fde *frame.Frame
 			}
 			if wpid != thread.Id {
 				thread = thread.Process.Threads[wpid]
+				thread.Process.CurrentThread = thread.Process.Threads[wpid]
 			}
 			pc, _ = thread.CurrentPC()
 			if (pc-1) == bp.Addr || pc == bp.Addr {
