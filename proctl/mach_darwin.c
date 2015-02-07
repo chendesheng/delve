@@ -20,8 +20,14 @@ int gettask(int pid, int* task) {
         return KERN_SUCCESS;
 }
 
-int getthreads(int task, void* threads, int* cnt) {
-        kern_return_t kret = task_threads(task, (thread_act_port_array_t*)threads, (unsigned int*)cnt);
+int getthreads(int pid, void* threads, int* cnt) {
+        int task;
+        kern_return_t kret;
+
+        kret = gettask(pid, &task);
+        CHECK_KRET(kret);
+
+        kret = task_threads(task, (thread_act_port_array_t*)threads, (unsigned int*)cnt);
         CHECK_KRET(kret);
 
         return KERN_SUCCESS;
@@ -112,7 +118,8 @@ int attach(int pid, void* ths, int* nth) {
         kern_return_t kret = gettask(pid, &task);
         CHECK_KRET(kret);
 
-        getthreads(task, ths, nth);
+        kret = task_threads(task, (thread_act_port_array_t*)ths, (unsigned int*)nth);
+        CHECK_KRET(kret);
 
         kret = setexcport(task);
         CHECK_KRET(kret);
@@ -156,8 +163,6 @@ int tasksuspend(int pid) {
         kret = gettask(pid, &task);
         CHECK_KRET(kret);
 
-        printf("tasksuspend\n");
-
         kret = task_suspend(task);
         CHECK_KRET(kret);
 
@@ -178,10 +183,13 @@ int taskresume(int pid) {
         kret = task_info(task, TASK_BASIC_INFO, (task_info_t)&info, &size);
         CHECK_KRET(kret)
 
-        for (i = 0; i < info.suspend_count; i++) {
-                kret = task_resume(task);
-                CHECK_KRET(kret);
-        } 
+        kret = task_resume(task);
+        CHECK_KRET(kret);
+
+        //for (i = 0; i < info.suspend_count; i++) {
+        //        kret = task_resume(task);
+        //        CHECK_KRET(kret);
+        //} 
 
         return KERN_SUCCESS;
 }

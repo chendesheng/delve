@@ -3,6 +3,8 @@ package proctl
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +27,10 @@ func withTestProcess(name string, t *testing.T, fn func(p *DebuggedProcess)) {
 
 	defer p.Process.Kill()
 
-	fn(p)
+	p.Listen(func() {
+		//defer close(p.chTrap)
+		fn(p)
+	})
 }
 
 func getRegisters(p *DebuggedProcess, t *testing.T) Registers {
@@ -35,16 +40,6 @@ func getRegisters(p *DebuggedProcess, t *testing.T) Registers {
 	}
 
 	return regs
-}
-
-func dataAtAddr(pid int, addr uint64) ([]byte, error) {
-	data := make([]byte, 1)
-	_, err := readMemory(pid, uintptr(addr), data)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
 }
 
 func assertNoError(err error, t *testing.T, s string) {
@@ -89,6 +84,55 @@ func TestStep(t *testing.T) {
 			t.Errorf("Expected %#v to be greater than %#v", regs.PC(), rip)
 		}
 	})
+}
+
+func TestStepProcess(t *testing.T) {
+	files := []string{"../_fixtures/testprog", "../_fixtures/testprog"}
+	lines := []int{18, 10}
+	steptimes := []int{1, 2}
+	linesafter := []int{8, 19}
+
+	for i := 0; i < len(files); i++ {
+		withTestProcess(files[i], t, func(p *DebuggedProcess) {
+			fp, err := filepath.Abs(files[i] + ".go")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			pc, _, _ := p.GoSymTable.LineToPC(fp, lines[i])
+			fmt.Printf("line %d pc:0x%x\n", lines[i], pc)
+
+			if _, err := p.Break(pc); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := p.Continue(); err != nil {
+				t.Fatal(err)
+			}
+
+			for j := 0; j < steptimes[i]; j++ {
+				pc, err = p.CurrentPC()
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				fmt.Printf("pc:0x%x\n", pc)
+				if err := p.Step(); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			pc, err = p.CurrentPC()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, l, _ := p.GoSymTable.PCToLine(pc)
+			if linesafter[i] != l {
+				t.Fatalf("Cases %d: Expect current pc in line %d but %d", i, linesafter[i], l)
+			}
+		})
+	}
 }
 
 func TestContinue(t *testing.T) {
@@ -189,7 +233,7 @@ func TestClearBreakpoint(t *testing.T) {
 		bp, err = p.Clear(fn.Entry)
 		assertNoError(err, t, "Clear()")
 
-		data, err := dataAtAddr(p.Pid, bp.Addr)
+		data, err := p.readMemory(uintptr(bp.Addr), 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -261,12 +305,7 @@ func TestNext(t *testing.T) {
 
 		p.Clear(pc)
 		if len(p.Breakpoints) != 0 {
-			t.Fatal("Not all breakpoints were cleaned up", len(p.HWBreakpoints))
-		}
-		for _, bp := range p.HWBreakpoints {
-			if bp != nil && bp.Addr != 0 {
-				t.Fatal("Not all breakpoints were cleaned up", bp.Addr)
-			}
+			t.Fatal("Not all breakpoints were cleaned up", len(p.Breakpoints))
 		}
 	})
 }
@@ -312,13 +351,11 @@ func TestFindReturnAddress(t *testing.T) {
 		}
 
 		addr := uint64(int64(regs.SP()) + ret)
-		data := make([]byte, 8)
-
-		readMemory(p.Pid, uintptr(addr), data)
+		data, _ := p.readMemory(uintptr(addr), 8)
 		addr = binary.LittleEndian.Uint64(data)
 
 		f, l, fn := gsd.PCToLine(addr)
-		println(f, ":", l, " ", fn.Name)
+		log.Println(f, ":", l, " ", fn.Name)
 
 		if l != 41 {
 			t.Fatalf("return address not found correctly, expected line 41 got %d", l)
@@ -389,4 +426,23 @@ func next(p *DebuggedProcess, t *testing.T) (string, int) {
 	}
 
 	return currentLineNumber(p, t)
+}
+
+func TestConcurrent(t *testing.T) {
+	log.SetFlags(log.Lshortfile | log.LstdFlags)
+
+	var testfile, _ = filepath.Abs("../_fixtures/concurrentprog")
+
+	withTestProcess(testfile, t, func(p *DebuggedProcess) {
+		start, _, err := p.GoSymTable.LineToPC(testfile+".go", 14)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		p.Break(start)
+
+		p.Continue()
+
+		p.Continue()
+	})
 }

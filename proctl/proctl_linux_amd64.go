@@ -25,6 +25,12 @@ type exefile struct {
 	*elf.File
 }
 
+// Obtains register values from what Delve considers to be the current
+// thread of the traced process.
+func (dbp *DebuggedProcess) Registers() (Registers, error) {
+	return registers(dbp.currentGoroutine.tid)
+}
+
 func (dbp *DebuggedProcess) addThread(tid int) (*ThreadContext, error) {
 	err := syscall.PtraceSetOptions(tid, syscall.PTRACE_O_TRACECLONE)
 	if err == syscall.ESRCH {

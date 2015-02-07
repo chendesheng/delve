@@ -5,6 +5,7 @@ import (
 	"debug/dwarf"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -20,7 +21,7 @@ type Variable struct {
 }
 
 type M struct {
-	procid   int
+	procid   uint64
 	spinning uint8
 	blocked  uint8
 	curg     uintptr
@@ -30,14 +31,14 @@ const ptrsize uintptr = unsafe.Sizeof(int(1))
 
 // Parses and returns select info on the internal M
 // data structures used by the Go scheduler.
-func (thread *ThreadContext) AllM() ([]*M, error) {
-	reader := thread.Process.Dwarf.Reader()
+func (dbp *DebuggedProcess) AllM() ([]*M, error) {
+	reader := dbp.Dwarf.Reader()
 
-	allmaddr, err := parseAllMPtr(thread.Process, reader)
+	allmaddr, err := parseAllMPtr(dbp, reader)
 	if err != nil {
 		return nil, err
 	}
-	mptr, err := thread.readMemory(uintptr(allmaddr), ptrsize)
+	mptr, err := dbp.readMemory(uintptr(allmaddr), int(ptrsize))
 	if err != nil {
 		return nil, err
 	}
@@ -47,23 +48,23 @@ func (thread *ThreadContext) AllM() ([]*M, error) {
 	}
 
 	// parse addresses
-	procidInstructions, err := instructionsFor("procid", thread.Process, reader, true)
+	procidInstructions, err := instructionsFor("procid", dbp, reader, true)
 	if err != nil {
 		return nil, err
 	}
-	spinningInstructions, err := instructionsFor("spinning", thread.Process, reader, true)
+	spinningInstructions, err := instructionsFor("spinning", dbp, reader, true)
 	if err != nil {
 		return nil, err
 	}
-	alllinkInstructions, err := instructionsFor("alllink", thread.Process, reader, true)
+	alllinkInstructions, err := instructionsFor("alllink", dbp, reader, true)
 	if err != nil {
 		return nil, err
 	}
-	blockedInstructions, err := instructionsFor("blocked", thread.Process, reader, true)
+	blockedInstructions, err := instructionsFor("blocked", dbp, reader, true)
 	if err != nil {
 		return nil, err
 	}
-	curgInstructions, err := instructionsFor("curg", thread.Process, reader, true)
+	curgInstructions, err := instructionsFor("curg", dbp, reader, true)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +76,7 @@ func (thread *ThreadContext) AllM() ([]*M, error) {
 		if err != nil {
 			return nil, err
 		}
-		curgBytes, err := thread.readMemory(uintptr(curgAddr), ptrsize)
+		curgBytes, err := dbp.readMemory(uintptr(curgAddr), int(ptrsize))
 		if err != nil {
 			return nil, fmt.Errorf("could not read curg %#v %s", curgAddr, err)
 		}
@@ -86,7 +87,7 @@ func (thread *ThreadContext) AllM() ([]*M, error) {
 		if err != nil {
 			return nil, err
 		}
-		procidBytes, err := thread.readMemory(uintptr(procidAddr), ptrsize)
+		procidBytes, err := dbp.readMemory(uintptr(procidAddr), int(ptrsize))
 		if err != nil {
 			return nil, fmt.Errorf("could not read procid %#v %s", procidAddr, err)
 		}
@@ -97,7 +98,7 @@ func (thread *ThreadContext) AllM() ([]*M, error) {
 		if err != nil {
 			return nil, err
 		}
-		spinBytes, err := thread.readMemory(uintptr(spinningAddr), 1)
+		spinBytes, err := dbp.readMemory(uintptr(spinningAddr), 1)
 		if err != nil {
 			return nil, fmt.Errorf("could not read spinning %#v %s", spinningAddr, err)
 		}
@@ -107,13 +108,13 @@ func (thread *ThreadContext) AllM() ([]*M, error) {
 		if err != nil {
 			return nil, err
 		}
-		blockBytes, err := thread.readMemory(uintptr(blockedAddr), 1)
+		blockBytes, err := dbp.readMemory(uintptr(blockedAddr), 1)
 		if err != nil {
 			return nil, fmt.Errorf("could not read blocked %#v %s", blockedAddr, err)
 		}
 
 		allm = append(allm, &M{
-			procid:   int(procid),
+			procid:   procid,
 			blocked:  blockBytes[0],
 			spinning: spinBytes[0],
 			curg:     uintptr(curg),
@@ -124,7 +125,7 @@ func (thread *ThreadContext) AllM() ([]*M, error) {
 		if err != nil {
 			return nil, err
 		}
-		mptr, err = thread.readMemory(uintptr(alllinkAddr), ptrsize)
+		mptr, err = dbp.readMemory(uintptr(alllinkAddr), int(ptrsize))
 		if err != nil {
 			return nil, fmt.Errorf("could not read alllink %#v %s", alllinkAddr, err)
 		}
@@ -195,6 +196,67 @@ func parseAllMPtr(dbp *DebuggedProcess, reader *dwarf.Reader) (uint64, error) {
 	return uint64(addr), nil
 }
 
+var allgaddr uint64
+var allglenaddr uint64
+
+//Find goroutine id by compare SP with G struct's stack field (stack.lo <= SP <= stack.hi)
+//FIXME: It's hacky, need better way to find thread's goroutine. Already tried and failed: 1)read tls 2)use procid field (not work on OSX)
+func (dbp *DebuggedProcess) getGoroutineId(tid int) (int, error) {
+	regs, err := registers(tid)
+	if err != nil {
+		return 0, err
+	}
+	sp := regs.SP()
+
+	reader := dbp.Dwarf.Reader()
+
+	allglen, err := allglenval(dbp, reader)
+	if err != nil {
+		return 0, err
+	}
+
+	if allgaddr == 0 {
+		reader.Seek(0)
+		allgentryaddr, err := addressFor(dbp, "runtime.allg", reader)
+		if err != nil {
+			return 0, err
+		}
+
+		faddr, err := dbp.readMemory(uintptr(allgentryaddr), int(ptrsize))
+		if err != nil {
+			return 0, err
+		}
+
+		allgaddr = binary.LittleEndian.Uint64(faddr)
+	}
+	for i := uint64(0); i < allglen; i++ {
+		gid, lo, hi, err := getStackRange(dbp, allgaddr+(i*uint64(ptrsize)), reader)
+
+		if _, _, fn := dbp.GoSymTable.PCToLine(regs.PC()); fn.Name == "main.main" {
+			//fn := dbp.GoSymTable.LookupFunc("main.main")
+			//if fn.Entry == regs.PC()-1 {
+			//} else {
+			//	d, _ := dbp.readMemory(uintptr(regs.SP()-0x18), 8)
+			//	sp = binary.LittleEndian.Uint64(d)
+			//}
+			sp = regs.SP() - 0x18
+			log.Printf("sp:%#v", sp)
+		}
+
+		log.Printf("gid: %#v, lo: %#v, hi: %#v", gid, lo, hi)
+		if lo <= sp && sp <= hi {
+			return gid, nil
+		}
+
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	//return 0, fmt.Errorf("Can't find goroutine by sp: %#v", sp)
+	return 0, nil
+}
+
 func (dbp *DebuggedProcess) PrintGoroutinesInfo() error {
 	reader := dbp.Dwarf.Reader()
 
@@ -208,7 +270,7 @@ func (dbp *DebuggedProcess) PrintGoroutinesInfo() error {
 		return err
 	}
 	fmt.Printf("[%d goroutines]\n", allglen)
-	faddr, err := dbp.CurrentThread.readMemory(uintptr(allgentryaddr), ptrsize)
+	faddr, err := dbp.readMemory(uintptr(allgentryaddr), int(ptrsize))
 	allg := binary.LittleEndian.Uint64(faddr)
 
 	for i := uint64(0); i < allglen; i++ {
@@ -221,29 +283,85 @@ func (dbp *DebuggedProcess) PrintGoroutinesInfo() error {
 	return nil
 }
 
+func getStackRange(dbp *DebuggedProcess, addr uint64, reader *dwarf.Reader) (int, uint64, uint64, error) {
+	gaddrbytes, err := dbp.readMemory(uintptr(addr), int(ptrsize))
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("error derefing *G %s", err)
+	}
+	initialInstructions := append([]byte{op.DW_OP_addr}, gaddrbytes...)
+
+	reader.Seek(0)
+	goidaddr, err := offsetFor("goid", reader, initialInstructions)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	goidbytes, err := dbp.readMemory(uintptr(goidaddr), int(ptrsize))
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("error reading goid %s", err)
+	}
+	gid := int(binary.LittleEndian.Uint64(goidbytes))
+
+	//	reader.Seek(0)
+	//	stackaddr, err := offsetFor("stack", reader, initialInstructions)
+	//	if err != nil {
+	//		return 0, 0, 0, err
+	//	}
+	stackaddr := addr
+
+	//stack at the beginning of G struct
+	stacklobytes, err := dbp.readMemory(uintptr(stackaddr), int(ptrsize))
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("error reading stack %s", err)
+	}
+	lo := binary.LittleEndian.Uint64(stacklobytes)
+
+	stackhibytes, err := dbp.readMemory(uintptr(stackaddr+uint64(ptrsize)), int(ptrsize))
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("error reading stack %s", err)
+	}
+	hi := binary.LittleEndian.Uint64(stackhibytes)
+
+	return gid, lo, hi, nil
+}
+
 func printGoroutineInfo(dbp *DebuggedProcess, addr uint64, reader *dwarf.Reader) error {
-	gaddrbytes, err := dbp.CurrentThread.readMemory(uintptr(addr), ptrsize)
+	gaddrbytes, err := dbp.readMemory(uintptr(addr), int(ptrsize))
 	if err != nil {
 		return fmt.Errorf("error derefing *G %s", err)
 	}
 	initialInstructions := append([]byte{op.DW_OP_addr}, gaddrbytes...)
 
 	reader.Seek(0)
-	goidaddr, err := offsetFor(dbp, "goid", reader, initialInstructions)
-	if err != nil {
-		return err
-	}
-	reader.Seek(0)
-	schedaddr, err := offsetFor(dbp, "sched", reader, initialInstructions)
+	goidaddr, err := offsetFor("goid", reader, initialInstructions)
 	if err != nil {
 		return err
 	}
 
-	goidbytes, err := dbp.CurrentThread.readMemory(uintptr(goidaddr), ptrsize)
+	reader.Seek(0)
+	schedaddr, err := offsetFor("sched", reader, initialInstructions)
+	if err != nil {
+		return err
+	}
+
+	goidbytes, err := dbp.readMemory(uintptr(goidaddr), int(ptrsize))
 	if err != nil {
 		return fmt.Errorf("error reading goid %s", err)
 	}
-	schedbytes, err := dbp.CurrentThread.readMemory(uintptr(schedaddr+uint64(ptrsize)), ptrsize)
+
+	stacklobytes, err := dbp.readMemory(uintptr(addr), int(ptrsize))
+	if err != nil {
+		return fmt.Errorf("error reading stack %s", err)
+	}
+	stacklo := binary.LittleEndian.Uint64(stacklobytes)
+
+	stackhibytes, err := dbp.readMemory(uintptr(addr+uint64(ptrsize)), int(ptrsize))
+	if err != nil {
+		return fmt.Errorf("error reading stack %s", err)
+	}
+	stackhi := binary.LittleEndian.Uint64(stackhibytes)
+
+	schedbytes, err := dbp.readMemory(uintptr(schedaddr+uint64(ptrsize)), int(ptrsize))
 	if err != nil {
 		return fmt.Errorf("error reading sched %s", err)
 	}
@@ -253,25 +371,28 @@ func printGoroutineInfo(dbp *DebuggedProcess, addr uint64, reader *dwarf.Reader)
 	if fn != nil {
 		fname = fn.Name
 	}
-	fmt.Printf("Goroutine %d - %s:%d %s\n", binary.LittleEndian.Uint64(goidbytes), f, l, fname)
+	fmt.Printf("Goroutine %d - %s:%d %s\tstack:[%#v-%#v)\n", binary.LittleEndian.Uint64(goidbytes), f, l, fname, stacklo, stackhi)
 	return nil
 }
 
 func allglenval(dbp *DebuggedProcess, reader *dwarf.Reader) (uint64, error) {
-	entry, err := findDwarfEntry("runtime.allglen", reader, false)
-	if err != nil {
-		return 0, err
-	}
+	if allglenaddr == 0 {
+		entry, err := findDwarfEntry("runtime.allglen", reader, false)
+		if err != nil {
+			return 0, err
+		}
 
-	instructions, ok := entry.Val(dwarf.AttrLocation).([]byte)
-	if !ok {
-		return 0, fmt.Errorf("type assertion failed")
+		instructions, ok := entry.Val(dwarf.AttrLocation).([]byte)
+		if !ok {
+			return 0, fmt.Errorf("type assertion failed")
+		}
+		addr, err := op.ExecuteStackProgram(0, instructions)
+		if err != nil {
+			return 0, err
+		}
+		allglenaddr = uint64(addr)
 	}
-	addr, err := op.ExecuteStackProgram(0, instructions)
-	if err != nil {
-		return 0, err
-	}
-	val, err := dbp.CurrentThread.readMemory(uintptr(addr), 8)
+	val, err := dbp.readMemory(uintptr(allglenaddr), 8)
 	if err != nil {
 		return 0, err
 	}
@@ -296,7 +417,7 @@ func addressFor(dbp *DebuggedProcess, name string, reader *dwarf.Reader) (uint64
 	return uint64(addr), nil
 }
 
-func offsetFor(dbp *DebuggedProcess, name string, reader *dwarf.Reader, parentinstr []byte) (uint64, error) {
+func offsetFor(name string, reader *dwarf.Reader, parentinstr []byte) (uint64, error) {
 	entry, err := findDwarfEntry(name, reader, true)
 	if err != nil {
 		return 0, err
@@ -314,13 +435,13 @@ func offsetFor(dbp *DebuggedProcess, name string, reader *dwarf.Reader, parentin
 }
 
 // Returns the value of the named symbol.
-func (thread *ThreadContext) EvalSymbol(name string) (*Variable, error) {
-	pc, err := thread.CurrentPC()
+func (g *Goroutine) EvalSymbol(name string) (*Variable, error) {
+	pc, err := g.pc()
 	if err != nil {
 		return nil, err
 	}
 
-	reader := thread.Process.DwarfReader()
+	reader := g.dbp.DwarfReader()
 
 	_, err = reader.SeekToFunction(pc)
 	if err != nil {
@@ -347,9 +468,9 @@ func (thread *ThreadContext) EvalSymbol(name string) (*Variable, error) {
 
 		if n == varName {
 			if len(memberName) == 0 {
-				return thread.extractVariableFromEntry(entry)
+				return g.extractVariableFromEntry(entry)
 			}
-			return thread.evaluateStructMember(entry, reader, memberName)
+			return g.evaluateStructMember(entry, reader, memberName)
 		}
 	}
 
@@ -393,8 +514,8 @@ func findDwarfEntry(name string, reader *dwarf.Reader, member bool) (*dwarf.Entr
 	return nil, fmt.Errorf("could not find symbol value for %s", name)
 }
 
-func (thread *ThreadContext) evaluateStructMember(parentEntry *dwarf.Entry, reader *reader.Reader, memberName string) (*Variable, error) {
-	parentAddr, err := thread.extractVariableDataAddress(parentEntry, reader)
+func (g *Goroutine) evaluateStructMember(parentEntry *dwarf.Entry, reader *reader.Reader, memberName string) (*Variable, error) {
+	parentAddr, err := g.extractVariableDataAddress(parentEntry, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +559,7 @@ func (thread *ThreadContext) evaluateStructMember(parentEntry *dwarf.Entry, read
 				return nil, fmt.Errorf("type assertion failed")
 			}
 
-			data := thread.Process.Dwarf
+			data := g.dbp.Dwarf
 			t, err := data.Type(offset)
 			if err != nil {
 				return nil, err
@@ -448,7 +569,7 @@ func (thread *ThreadContext) evaluateStructMember(parentEntry *dwarf.Entry, read
 			binary.LittleEndian.PutUint64(baseAddr, uint64(parentAddr))
 
 			parentInstructions := append([]byte{op.DW_OP_addr}, baseAddr...)
-			val, err := thread.extractValue(append(parentInstructions, memberInstr...), 0, t)
+			val, err := g.extractValue(append(parentInstructions, memberInstr...), 0, t)
 			if err != nil {
 				return nil, err
 			}
@@ -460,7 +581,7 @@ func (thread *ThreadContext) evaluateStructMember(parentEntry *dwarf.Entry, read
 }
 
 // Extracts the name, type, and value of a variable from a dwarf entry
-func (thread *ThreadContext) extractVariableFromEntry(entry *dwarf.Entry) (*Variable, error) {
+func (g *Goroutine) extractVariableFromEntry(entry *dwarf.Entry) (*Variable, error) {
 	if entry == nil {
 		return nil, fmt.Errorf("invalid entry")
 	}
@@ -479,7 +600,7 @@ func (thread *ThreadContext) extractVariableFromEntry(entry *dwarf.Entry) (*Vari
 		return nil, fmt.Errorf("type assertion failed")
 	}
 
-	data := thread.Process.Dwarf
+	data := g.dbp.Dwarf
 	t, err := data.Type(offset)
 	if err != nil {
 		return nil, err
@@ -490,7 +611,7 @@ func (thread *ThreadContext) extractVariableFromEntry(entry *dwarf.Entry) (*Vari
 		return nil, fmt.Errorf("type assertion failed")
 	}
 
-	val, err := thread.extractValue(instructions, 0, t)
+	val, err := g.extractValue(instructions, 0, t)
 	if err != nil {
 		return nil, err
 	}
@@ -499,13 +620,13 @@ func (thread *ThreadContext) extractVariableFromEntry(entry *dwarf.Entry) (*Vari
 }
 
 // Execute the stack program taking into account the current stack frame
-func (thread *ThreadContext) executeStackProgram(instructions []byte) (int64, error) {
-	regs, err := thread.Registers()
+func (g *Goroutine) executeStackProgram(instructions []byte) (int64, error) {
+	regs, err := registers(g.tid)
 	if err != nil {
 		return 0, err
 	}
 
-	fde, err := thread.Process.FrameEntries.FDEForPC(regs.PC())
+	fde, err := g.dbp.FrameEntries.FDEForPC(regs.PC())
 	if err != nil {
 		return 0, err
 	}
@@ -520,13 +641,13 @@ func (thread *ThreadContext) executeStackProgram(instructions []byte) (int64, er
 }
 
 // Extracts the address of a variable, dereferencing any pointers
-func (thread *ThreadContext) extractVariableDataAddress(entry *dwarf.Entry, reader *reader.Reader) (int64, error) {
+func (g *Goroutine) extractVariableDataAddress(entry *dwarf.Entry, reader *reader.Reader) (int64, error) {
 	instructions, err := instructionsForEntry(entry)
 	if err != nil {
 		return 0, err
 	}
 
-	address, err := thread.executeStackProgram(instructions)
+	address, err := g.executeStackProgram(instructions)
 	if err != nil {
 		return 0, err
 	}
@@ -543,7 +664,7 @@ func (thread *ThreadContext) extractVariableDataAddress(entry *dwarf.Entry, read
 
 		ptraddress := uintptr(address)
 
-		ptr, err := thread.readMemory(ptraddress, ptrsize)
+		ptr, err := g.dbp.readMemory(ptraddress, int(ptrsize))
 		if err != nil {
 			return 0, err
 		}
@@ -556,11 +677,11 @@ func (thread *ThreadContext) extractVariableDataAddress(entry *dwarf.Entry, read
 // Extracts the value from the instructions given in the DW_AT_location entry.
 // We execute the stack program described in the DW_OP_* instruction stream, and
 // then grab the value from the other processes memory.
-func (thread *ThreadContext) extractValue(instructions []byte, addr int64, typ interface{}) (string, error) {
+func (g *Goroutine) extractValue(instructions []byte, addr int64, typ interface{}) (string, error) {
 	var err error
 
 	if addr == 0 {
-		addr, err = thread.executeStackProgram(instructions)
+		addr, err = g.executeStackProgram(instructions)
 		if err != nil {
 			return "", err
 		}
@@ -575,7 +696,7 @@ func (thread *ThreadContext) extractValue(instructions []byte, addr int64, typ i
 	ptraddress := uintptr(addr)
 	switch t := typ.(type) {
 	case *dwarf.PtrType:
-		ptr, err := thread.readMemory(ptraddress, ptrsize)
+		ptr, err := g.dbp.readMemory(ptraddress, int(ptrsize))
 		if err != nil {
 			return "", err
 		}
@@ -585,7 +706,7 @@ func (thread *ThreadContext) extractValue(instructions []byte, addr int64, typ i
 			return fmt.Sprintf("%s nil", t.String()), nil
 		}
 
-		val, err := thread.extractValue(nil, intaddr, t.Type)
+		val, err := g.extractValue(nil, intaddr, t.Type)
 		if err != nil {
 			return "", err
 		}
@@ -594,15 +715,15 @@ func (thread *ThreadContext) extractValue(instructions []byte, addr int64, typ i
 	case *dwarf.StructType:
 		switch t.StructName {
 		case "string":
-			return thread.readString(ptraddress)
+			return g.readString(ptraddress)
 		case "[]int":
-			return thread.readIntSlice(ptraddress, t)
+			return g.readIntSlice(ptraddress, t)
 		default:
 			// Recursively call extractValue to grab
 			// the value of all the members of the struct.
 			fields := make([]string, 0, len(t.Field))
 			for _, field := range t.Field {
-				val, err := thread.extractValue(nil, field.ByteOffset+addr, field.Type)
+				val, err := g.extractValue(nil, field.ByteOffset+addr, field.Type)
 				if err != nil {
 					return "", err
 				}
@@ -613,35 +734,35 @@ func (thread *ThreadContext) extractValue(instructions []byte, addr int64, typ i
 			return retstr, nil
 		}
 	case *dwarf.ArrayType:
-		return thread.readIntArray(ptraddress, t)
+		return g.readIntArray(ptraddress, t)
 	case *dwarf.IntType:
-		return thread.readInt(ptraddress, t.ByteSize)
+		return g.readInt(ptraddress, t.ByteSize)
 	case *dwarf.FloatType:
-		return thread.readFloat(ptraddress, t.ByteSize)
+		return g.readFloat(ptraddress, t.ByteSize)
 	}
 
 	return "", fmt.Errorf("could not find value for type %s", typ)
 }
 
-func (thread *ThreadContext) readString(addr uintptr) (string, error) {
+func (g *Goroutine) readString(addr uintptr) (string, error) {
 	// string data structure is always two ptrs in size. Addr, followed by len
 	// http://research.swtch.com/godata
 
 	// read len
-	val, err := thread.readMemory(addr+ptrsize, ptrsize)
+	val, err := g.dbp.readMemory(addr+ptrsize, int(ptrsize))
 	if err != nil {
 		return "", err
 	}
 	strlen := uintptr(binary.LittleEndian.Uint64(val))
 
 	// read addr
-	val, err = thread.readMemory(addr, ptrsize)
+	val, err = g.dbp.readMemory(addr, int(ptrsize))
 	if err != nil {
 		return "", err
 	}
 	addr = uintptr(binary.LittleEndian.Uint64(val))
 
-	val, err = thread.readMemory(addr, strlen)
+	val, err = g.dbp.readMemory(addr, int(strlen))
 	if err != nil {
 		return "", err
 	}
@@ -649,8 +770,8 @@ func (thread *ThreadContext) readString(addr uintptr) (string, error) {
 	return *(*string)(unsafe.Pointer(&val)), nil
 }
 
-func (thread *ThreadContext) readIntSlice(addr uintptr, t *dwarf.StructType) (string, error) {
-	val, err := thread.readMemory(addr, uintptr(24))
+func (g *Goroutine) readIntSlice(addr uintptr, t *dwarf.StructType) (string, error) {
+	val, err := g.dbp.readMemory(addr, 24)
 	if err != nil {
 		return "", err
 	}
@@ -659,7 +780,7 @@ func (thread *ThreadContext) readIntSlice(addr uintptr, t *dwarf.StructType) (st
 	l := binary.LittleEndian.Uint64(val[8:16])
 	c := binary.LittleEndian.Uint64(val[16:24])
 
-	val, err = thread.readMemory(uintptr(a), uintptr(uint64(ptrsize)*l))
+	val, err = g.dbp.readMemory(uintptr(a), int(uint64(ptrsize)*l))
 	if err != nil {
 		return "", err
 	}
@@ -673,8 +794,8 @@ func (thread *ThreadContext) readIntSlice(addr uintptr, t *dwarf.StructType) (st
 	return "", fmt.Errorf("Could not read slice")
 }
 
-func (thread *ThreadContext) readIntArray(addr uintptr, t *dwarf.ArrayType) (string, error) {
-	val, err := thread.readMemory(addr, uintptr(t.ByteSize))
+func (g *Goroutine) readIntArray(addr uintptr, t *dwarf.ArrayType) (string, error) {
+	val, err := g.dbp.readMemory(addr, int(t.ByteSize))
 	if err != nil {
 		return "", err
 	}
@@ -692,10 +813,10 @@ func (thread *ThreadContext) readIntArray(addr uintptr, t *dwarf.ArrayType) (str
 	return "", fmt.Errorf("Could not read array")
 }
 
-func (thread *ThreadContext) readInt(addr uintptr, size int64) (string, error) {
+func (g *Goroutine) readInt(addr uintptr, size int64) (string, error) {
 	var n int
 
-	val, err := thread.readMemory(addr, uintptr(size))
+	val, err := g.dbp.readMemory(addr, int(size))
 	if err != nil {
 		return "", err
 	}
@@ -714,8 +835,8 @@ func (thread *ThreadContext) readInt(addr uintptr, size int64) (string, error) {
 	return strconv.Itoa(n), nil
 }
 
-func (thread *ThreadContext) readFloat(addr uintptr, size int64) (string, error) {
-	val, err := thread.readMemory(addr, uintptr(size))
+func (g *Goroutine) readFloat(addr uintptr, size int64) (string, error) {
+	val, err := g.dbp.readMemory(addr, int(size))
 	if err != nil {
 		return "", err
 	}
@@ -736,13 +857,13 @@ func (thread *ThreadContext) readFloat(addr uintptr, size int64) (string, error)
 }
 
 // Fetches all variables of a specific type in the current function scope
-func (thread *ThreadContext) variablesByTag(tag dwarf.Tag) ([]*Variable, error) {
-	pc, err := thread.CurrentPC()
+func (g *Goroutine) variablesByTag(tag dwarf.Tag) ([]*Variable, error) {
+	pc, err := g.pc()
 	if err != nil {
 		return nil, err
 	}
 
-	reader := thread.Process.DwarfReader()
+	reader := g.dbp.DwarfReader()
 
 	_, err = reader.SeekToFunction(pc)
 	if err != nil {
@@ -757,7 +878,7 @@ func (thread *ThreadContext) variablesByTag(tag dwarf.Tag) ([]*Variable, error) 
 		}
 
 		if entry.Tag == tag {
-			val, err := thread.extractVariableFromEntry(entry)
+			val, err := g.extractVariableFromEntry(entry)
 			if err != nil {
 				return nil, err
 			}
@@ -770,13 +891,21 @@ func (thread *ThreadContext) variablesByTag(tag dwarf.Tag) ([]*Variable, error) 
 }
 
 // LocalVariables returns all local variables from the current function scope
-func (thread *ThreadContext) LocalVariables() ([]*Variable, error) {
-	return thread.variablesByTag(dwarf.TagVariable)
+func (dbp *DebuggedProcess) LocalVariables() ([]*Variable, error) {
+	return dbp.currentGoroutine.variablesByTag(dwarf.TagVariable)
+}
+
+func (dbp *DebuggedProcess) PrintRegs() {
+	regs, err := registers(dbp.currentGoroutine.tid)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("%#v", regs)
 }
 
 // FunctionArguments returns the name, value, and type of all current function arguments
-func (thread *ThreadContext) FunctionArguments() ([]*Variable, error) {
-	return thread.variablesByTag(dwarf.TagFormalParameter)
+func (dbp *DebuggedProcess) FunctionArguments() ([]*Variable, error) {
+	return dbp.currentGoroutine.variablesByTag(dwarf.TagFormalParameter)
 }
 
 // Sets the length of a slice.

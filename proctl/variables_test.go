@@ -152,10 +152,10 @@ func TestLocalVariables(t *testing.T) {
 	}
 
 	testcases := []struct {
-		fn     func(*ThreadContext) ([]*Variable, error)
+		fn     func(*DebuggedProcess) ([]*Variable, error)
 		output []varTest
 	}{
-		{(*ThreadContext).LocalVariables,
+		{(*DebuggedProcess).LocalVariables,
 			[]varTest{
 				{"a1", "foofoofoofoofoofoo", "struct string", nil},
 				{"a10", "ofo", "struct string", nil},
@@ -171,7 +171,7 @@ func TestLocalVariables(t *testing.T) {
 				{"i32", "[2]int32 [1 2]", "[2]int32", nil},
 				{"i8", "1", "int8", nil},
 				{"neg", "-1", "int", nil}}},
-		{(*ThreadContext).FunctionArguments,
+		{(*DebuggedProcess).FunctionArguments,
 			[]varTest{
 				{"bar", "main.FooBar {Baz: 10, Bur: lorem}", "main.FooBar", nil},
 				{"baz", "bazburzum", "struct string", nil}}},
@@ -187,7 +187,8 @@ func TestLocalVariables(t *testing.T) {
 		assertNoError(err, t, "Continue() returned an error")
 
 		for _, tc := range testcases {
-			vars, err := tc.fn(p.CurrentThread)
+			vars, err := tc.fn(p)
+
 			assertNoError(err, t, "LocalVariables() returned an error")
 
 			sort.Sort(varArray(vars))

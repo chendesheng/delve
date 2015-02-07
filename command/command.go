@@ -44,6 +44,7 @@ func DebugCommands() *Commands {
 	c.cmds = []command{
 		command{aliases: []string{"help"}, cmdFn: c.help, helpMsg: "Prints the help message."},
 		command{aliases: []string{"break", "b"}, cmdFn: breakpoint, helpMsg: "Set break point at the entry point of a function, or at a specific file/line. Example: break foo.go:13"},
+		command{aliases: []string{"breakpoints", "lb"}, cmdFn: breakpoints, helpMsg: "list all breakpoints"},
 		command{aliases: []string{"continue", "c"}, cmdFn: cont, helpMsg: "Run until breakpoint or program termination."},
 		command{aliases: []string{"step", "si"}, cmdFn: step, helpMsg: "Single step through program."},
 		command{aliases: []string{"next", "n"}, cmdFn: next, helpMsg: "Step over to next source line."},
@@ -180,6 +181,11 @@ func breakpoint(p *proctl.DebuggedProcess, args ...string) error {
 	return nil
 }
 
+func breakpoints(p *proctl.DebuggedProcess, args ...string) error {
+	p.PrintBreakpoints()
+	return nil
+}
+
 func printVar(p *proctl.DebuggedProcess, args ...string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("not enough arguments")
@@ -241,19 +247,20 @@ func info(p *proctl.DebuggedProcess, args ...string) error {
 		}
 
 	case "args":
-		vars, err := p.CurrentThread.FunctionArguments()
+		vars, err := p.FunctionArguments()
 		if err != nil {
 			return nil
 		}
 		data = filterVariables(vars, filter)
 
 	case "locals":
-		vars, err := p.CurrentThread.LocalVariables()
+		vars, err := p.LocalVariables()
 		if err != nil {
 			return nil
 		}
 		data = filterVariables(vars, filter)
-
+	case "registers":
+		p.PrintRegs()
 	default:
 		return fmt.Errorf("unsupported info type, must be sources, funcs, locals, or args")
 	}
@@ -269,14 +276,18 @@ func info(p *proctl.DebuggedProcess, args ...string) error {
 }
 
 func printcontext(p *proctl.DebuggedProcess) error {
+	return nil
+}
+func PrintContext(p *proctl.DebuggedProcess) error {
 	var context []string
 
-	regs, err := p.Registers()
+	pc, err := p.CurrentPCForDisplay()
 	if err != nil {
 		return err
 	}
+	//log.Printf("get pc: %#v", pc)
 
-	f, l, fn := p.GoSymTable.PCToLine(regs.PC())
+	f, l, fn := p.GoSymTable.PCToLine(pc)
 
 	if fn != nil {
 		fmt.Printf("current loc: %s %s:%d\n", fn.Name, f, l)
@@ -286,15 +297,20 @@ func printcontext(p *proctl.DebuggedProcess) error {
 		}
 		defer file.Close()
 
+		lb := l - 5
+		if lb <= 0 {
+			lb = 1
+		}
+
 		buf := bufio.NewReader(file)
-		for i := 1; i < l-5; i++ {
+		for i := 1; i < lb; i++ {
 			_, err := buf.ReadString('\n')
 			if err != nil && err != io.EOF {
 				return err
 			}
 		}
 
-		for i := l - 5; i <= l+5; i++ {
+		for i := lb; i <= l+5; i++ {
 			line, err := buf.ReadString('\n')
 			if err != nil {
 				if err != io.EOF {
@@ -314,7 +330,7 @@ func printcontext(p *proctl.DebuggedProcess) error {
 			context = append(context, fmt.Sprintf("\033[34m%s %d\033[0m: %s", arrow, i, line))
 		}
 	} else {
-		fmt.Printf("Stopped at: 0x%x\n", regs.PC())
+		fmt.Printf("Stopped at: 0x%x\n", pc)
 		context = append(context, "\033[34m=>\033[0m    no source available")
 	}
 

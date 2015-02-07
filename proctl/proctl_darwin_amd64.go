@@ -8,7 +8,6 @@ import "C"
 import (
 	"debug/macho"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"reflect"
@@ -27,14 +26,26 @@ type exefile struct {
 	*macho.File
 }
 
+const (
+	TE_BREAKPOINT = iota
+	TE_SIGNAL
+	TE_MANUAL
+	TE_EXCEPTION
+	TE_EXIT
+)
+
 type trapEvent struct {
-	id     int
-	status *syscall.WaitStatus
-	err    error
+	gid  int
+	tid  int
+	typ  int
+	err  error
+	data []byte
 }
 
 type debuggedProcess struct {
-	chTrap chan *trapEvent //notify when mach exception happens
+	chTrap           chan *trapEvent //notify when mach exception happens
+	goroutines       map[int]*Goroutine
+	currentGoroutine *Goroutine
 }
 
 func (dbp *DebuggedProcess) findExecutable() (exefile, error) {
@@ -65,10 +76,25 @@ func (dbp *DebuggedProcess) findExecutable() (exefile, error) {
 	return exefile{machofile}, nil
 }
 
+func (dbp *DebuggedProcess) addGoroutine(gid int, tid int) *Goroutine {
+	log.Printf("addGroutine:%d %d", gid, tid)
+
+	dbp.goroutines[gid] = &Goroutine{
+		id:     gid,
+		dbp:    dbp,
+		tid:    tid,
+		chcont: make(chan chan struct{}),
+	}
+
+	return dbp.goroutines[gid]
+}
+
 func (dbp *DebuggedProcess) addThread(tid int) (*ThreadContext, error) {
 	dbp.Threads[tid] = &ThreadContext{
-		Id:      tid,
-		Process: dbp,
+		Id:        tid,
+		Process:   dbp,
+		firstTrap: true,
+		chTrap:    make(chan chan struct{}),
 	}
 
 	return dbp.Threads[tid], nil
@@ -78,69 +104,69 @@ func (dbp *DebuggedProcess) AttachThread(tid int) (*ThreadContext, error) {
 	return dbp.addThread(tid)
 }
 
-//func addNewThread(dbp *DebuggedProcess, pid int) error {
-//	return errors.New("Not implemented")
-//}
-
-func stopped(pid int) bool {
-	return false
-}
-
 func (dbp *DebuggedProcess) RequestManualStop() {
+	dbp.suspend()
+	dbp.chTrap <- &trapEvent{
+		gid: dbp.currentGoroutine.id,
+		tid: dbp.currentGoroutine.tid,
+		typ: TE_MANUAL,
+	}
 }
 
 func waitroutine(dbp *DebuggedProcess) {
 	for {
 		var status syscall.WaitStatus
-		pid, err := syscall.Wait4(dbp.Pid, &status, 0, nil)
+		syscall.Wait4(dbp.Pid, &status, 0, nil)
 		if status.Exited() {
-			dbp.chTrap <- &trapEvent{pid, &status, err}
+			dbp.chTrap <- &trapEvent{
+				gid: 0,
+				tid: 0,
+				typ: TE_EXIT,
+			}
 			return
 		}
 	}
 }
 
-func trapWait(dbp *DebuggedProcess, pid int) (int, *syscall.WaitStatus, error) {
-	for {
-		evt := <-dbp.chTrap
-		wpid, status, err := evt.id, evt.status, evt.err
-
-		if err != nil {
-			return -1, nil, fmt.Errorf("wait err %s %d", err, pid)
-		}
-
-		if wpid == 0 {
-			continue
-		}
-
-		if th, ok := dbp.Threads[wpid]; ok {
-			th.Status = status
-		}
-
-		if status.Exited() && wpid == dbp.Pid {
-			dbp.CurrentThread.Status = status
-			return -1, status, ProcessExitedError{wpid}
-		}
-
-		if status.StopSignal() == syscall.SIGTRAP {
-			return wpid, status, nil
-		}
-
-		if status.StopSignal() == syscall.SIGSTOP && dbp.halt {
-			return -1, nil, ManualStopError{}
-		}
-	}
-}
+//func trapWait(dbp *DebuggedProcess, pid int) (int, *syscall.WaitStatus, error) {
+//	for {
+//		evt := <-dbp.chTrap
+//		log.Printf("receive chTrap: %v", evt)
+//
+//		wpid, status, err := evt.id, evt.status, evt.err
+//
+//		if err != nil {
+//			return -1, nil, fmt.Errorf("wait err %s %d", err, pid)
+//		}
+//
+//		if wpid == 0 {
+//			continue
+//		}
+//
+//		if th, ok := dbp.Threads[wpid]; ok {
+//			th.Status = status
+//		}
+//
+//		if status.Exited() && wpid == dbp.Pid {
+//			dbp.CurrentThread.Status = status
+//			return -1, status, ProcessExitedError{wpid}
+//		}
+//
+//		if status.StopSignal() == syscall.SIGTRAP {
+//			log.Print("trapWait:SIGTRAP")
+//			return wpid, status, nil
+//		}
+//
+//		if status.StopSignal() == syscall.SIGSTOP && dbp.halt {
+//			return -1, nil, ManualStopError{}
+//		}
+//	}
+//}
 
 func wait(pid, options int) (int, *syscall.WaitStatus, error) {
 	var status syscall.WaitStatus
 	wpid, err := syscall.Wait4(pid, &status, options, nil)
 	return wpid, &status, err
-}
-
-// Ensure execution of every traced thread is halted.
-func stopTheWorld(dbp *DebuggedProcess) error {
-	return taskSuspend(dbp.Pid)
 }
 
 var fnCatchExceptionRaise func(C.int, C.int, C.exception_type_t, C.exception_data_t, C.mach_msg_type_number_t) int
@@ -153,17 +179,41 @@ func catch_exception_raise(eport C.int, thread C.int, task C.int, exception C.ex
 	return C.int(fnCatchExceptionRaise(task, thread, exception, code, ncode))
 }
 
+func (dbp *DebuggedProcess) getThreads() ([]int, error) {
+	pths := uintptr(0)
+	nth := 0
+	err := macherr(C.getthreads(C.int(dbp.Pid), unsafe.Pointer(&pths), (*C.int)(unsafe.Pointer(&nth))))
+	if err != nil {
+		return nil, err
+	}
+
+	threads := make([]int32, 0)
+	head := (*reflect.SliceHeader)(unsafe.Pointer(&threads))
+	head.Data = pths
+	head.Len = nth
+	head.Cap = nth
+
+	res := make([]int, 0)
+	for _, th := range threads {
+		if th != 0 {
+			res = append(res, int(th))
+		}
+	}
+
+	return res, nil
+}
+
 // Returns a new DebuggedProcess struct with sensible defaults.
 func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	dbp := DebuggedProcess{
 		Pid:         pid,
 		Threads:     make(map[int]*ThreadContext),
 		Breakpoints: make(map[uint64]*Breakpoint),
+		debuggedProcess: debuggedProcess{
+			goroutines: make(map[int]*Goroutine),
+		},
 	}
-	dbp.chTrap = make(chan *trapEvent)
-	for i, _ := range dbp.HWBreakpoints {
-		dbp.HWBreakpoints[i] = new(Breakpoint)
-	}
+	dbp.chTrap = make(chan *trapEvent, 100)
 
 	pths := uintptr(0)
 	nth := 0
@@ -178,47 +228,60 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	head.Len = nth
 	head.Cap = nth
 
-	if err := taskSuspend(pid); err != nil {
+	//	if err := dbp.suspend(); err != nil {
+	//		return nil, err
+	//	}
+
+	if err := threadSuspend(int(threads[0])); err != nil {
 		return nil, err
 	}
+
 	log.Printf("threads:%#v", threads)
-	for _, t := range threads {
-		tid := int(t)
-		if tid == 0 {
-			continue
-		}
-		dbp.CurrentThread, _ = dbp.addThread(tid)
-	}
 
 	fnCatchExceptionRaise = func(task C.int, thread C.int, exception C.exception_type_t, code C.exception_data_t, ncode C.mach_msg_type_number_t) int {
-		log.Printf("task:%d, thread:%d, exception:%d", task, thread, exception)
+		regs, _ := registers(int(thread))
+		log.Printf("task:%d, thread:0x%x, exception:%d, pc:0x%x", task, thread, exception, regs.PC())
 
-		err := taskSuspend(dbp.Pid)
+		//err := dbp.suspend()
+		err := threadSuspend(int(thread))
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		tid := int(thread)
 
-		status := syscall.WaitStatus(0)
+		evttype := 0
 		if exception == 6 {
-			status = 0x57f //simulate stop trap
+			evttype = TE_BREAKPOINT
 		} else {
-			log.Fatal(fmt.Sprintf("exception: %d", int(exception)))
+			evttype = TE_EXCEPTION
+			//regs := mustGetRegs(tid)
+			//log.Printf("exception regs:%#v", regs)
+			//log.Fatal(fmt.Sprintf("exception: %d", int(exception)))
 		}
-		evt := &trapEvent{tid, &status, nil}
-		if _, ok := dbp.Threads[tid]; !ok {
-			dbp.addThread(tid)
+
+		gid, err := dbp.getGoroutineId(tid)
+		if err != nil {
+			log.Fatal(err)
 		}
-		dbp.chTrap <- evt
 
-		//regs, _ := th.GetRegs()
-		//log.Printf("exp:%d, rip:0x%x", exp, regs.Rip())
+		dbp.chTrap <- &trapEvent{
+			gid: gid,
+			tid: tid,
+			typ: evttype,
+		}
 
-		//log.Printf("regs:%#v", regs)
-		//log.Printf("rip:0x%x", regs.Rip())
 		return 0
 	}
+
+	//stop at start
+	go func() {
+		dbp.chTrap <- &trapEvent{
+			gid: 0,
+			tid: int(threads[0]),
+			typ: TE_MANUAL,
+		}
+	}()
 
 	go waitroutine(&dbp)
 	go C.server()
@@ -246,39 +309,25 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	return &dbp, nil
 }
 
+// Obtains register values from what Delve considers to be the current
+// thread of the traced process.
+func (dbp *DebuggedProcess) Registers() (Registers, error) {
+	return registers(dbp.currentGoroutine.tid)
+}
+
 // Resume process.
 func (dbp *DebuggedProcess) Continue() error {
-	if err := taskResume(dbp.Pid); err != nil {
-		log.Fatal(err)
-	}
-
-	fn := func() error {
-		wpid, _, err := trapWait(dbp, -1)
-		if err != nil {
-			return err
-		}
-		println("trapWait:", wpid)
-		return handleBreakpoint(dbp, wpid)
-	}
-	return dbp.run(fn)
+	return dbp.currentGoroutine.cont()
 }
 
 // Steps through process.
 func (dbp *DebuggedProcess) Step() (err error) {
-	fn := func() error {
-		return dbp.CurrentThread.Step()
-	}
-
-	return dbp.run(fn)
+	return dbp.currentGoroutine.step()
 }
 
 // Step over function calls.
 func (dbp *DebuggedProcess) Next() error {
-	fn := func() error {
-		return dbp.CurrentThread.Next()
-	}
-
-	return dbp.run(fn)
+	return dbp.currentGoroutine.next()
 }
 
 func Attach(pid int) (*DebuggedProcess, error) {
@@ -294,10 +343,38 @@ func (dbp *DebuggedProcess) Detach() error {
 	return macherr(C.int(C.detach(C.int(dbp.Pid))))
 }
 
-func taskSuspend(pid int) error {
-	return macherr(C.tasksuspend(C.int(pid)))
+func (dbp *DebuggedProcess) resume() error {
+	return macherr(C.taskresume(C.int(dbp.Pid)))
 }
 
-func taskResume(pid int) error {
-	return macherr(C.taskresume(C.int(pid)))
+func (dbp *DebuggedProcess) suspend() error {
+	return macherr(C.tasksuspend(C.int(dbp.Pid)))
+}
+
+func threadSuspend(tid int) error {
+	return macherr(C.int(C.thread_suspend(C.thread_act_t(tid))))
+}
+
+func threadResume(tid int) error {
+	return macherr(C.int(C.thread_resume(C.thread_act_t(tid))))
+}
+
+func (dbp *DebuggedProcess) writeMemory(addr uintptr, data []byte) (int, error) {
+	log.Printf("write memory:%#v, %#v", uint64(addr), data)
+	if err := macherr(C.vmwrite(C.int(dbp.Pid), C.ulong(addr), unsafe.Pointer(&data[0]), C.int(len(data)))); err != nil {
+		return 0, err
+	} else {
+		return len(data), nil
+	}
+}
+
+func (dbp *DebuggedProcess) readMemory(addr uintptr, size int) ([]byte, error) {
+	data := make([]byte, size)
+	outsize := C.ulong(0)
+
+	if err := macherr(C.vmread(C.int(dbp.Pid), C.ulong(addr), C.int(len(data)), unsafe.Pointer(&data[0]), &outsize)); err != nil {
+		return nil, err
+	} else {
+		return data, nil
+	}
 }

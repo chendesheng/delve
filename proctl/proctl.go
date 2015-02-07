@@ -5,7 +5,9 @@ package proctl
 import (
 	"debug/dwarf"
 	"debug/gosym"
+	"encoding/binary"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,7 +116,7 @@ func (dbp *DebuggedProcess) FindLocation(str string) (uint64, error) {
 
 // Sets a breakpoint in the current thread.
 func (dbp *DebuggedProcess) Break(addr uint64) (*Breakpoint, error) {
-	return dbp.CurrentThread.Break(addr)
+	return dbp.setBreakpoint(addr)
 }
 
 // Sets a breakpoint by location string (function, file+line, address)
@@ -123,12 +125,18 @@ func (dbp *DebuggedProcess) BreakByLocation(loc string) (*Breakpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dbp.CurrentThread.Break(addr)
+	return dbp.Break(addr)
+}
+
+func (dbp *DebuggedProcess) PrintBreakpoints() {
+	for _, bp := range dbp.Breakpoints {
+		fmt.Printf("%d\t%#v\t%s:%d\t%s\n", bp.ID, bp.Addr, bp.File, bp.Line, bp.FunctionName)
+	}
 }
 
 // Clears a breakpoint in the current thread.
 func (dbp *DebuggedProcess) Clear(addr uint64) (*Breakpoint, error) {
-	return dbp.CurrentThread.Clear(addr)
+	return dbp.clearBreakpoint(addr)
 }
 
 // Clears a breakpoint by location (function, file+line, address, breakpoint id)
@@ -137,7 +145,14 @@ func (dbp *DebuggedProcess) ClearByLocation(loc string) (*Breakpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dbp.CurrentThread.Clear(addr)
+	regs, err := registers(dbp.currentGoroutine.tid)
+	if err != nil {
+		return nil, err
+	}
+	if regs.PC()-1 == addr {
+		regs.SetPC(dbp.currentGoroutine.tid, addr)
+	}
+	return dbp.clearBreakpoint(addr)
 }
 
 // Returns the status of the current main thread context.
@@ -148,18 +163,28 @@ func (dbp *DebuggedProcess) Status() *syscall.WaitStatus {
 // Loop through all threads, printing their information
 // to the console.
 func (dbp *DebuggedProcess) PrintThreadInfo() error {
-	for _, th := range dbp.Threads {
-		if err := th.PrintInfo(); err != nil {
+	threads, err := dbp.getThreads()
+	if err != nil {
+		return err
+	}
+
+	log.Printf("threads:%#v", threads)
+
+	for _, th := range threads {
+		regs, err := registers(th)
+		if err != nil {
 			return err
+		}
+		pc := regs.PC()
+
+		f, l, fn := dbp.GoSymTable.PCToLine(pc)
+		if fn != nil {
+			fmt.Printf("Thread %d at %#v %s:%d %s\n", th, pc, f, l, fn.Name)
+		} else {
+			fmt.Printf("Thread %d at %#v\n", th, pc)
 		}
 	}
 	return nil
-}
-
-// Obtains register values from what Delve considers to be the current
-// thread of the traced process.
-func (dbp *DebuggedProcess) Registers() (Registers, error) {
-	return dbp.CurrentThread.Registers()
 }
 
 type InvalidAddressError struct {
@@ -170,13 +195,33 @@ func (iae InvalidAddressError) Error() string {
 	return fmt.Sprintf("Invalid address %#v\n", iae.address)
 }
 
+func (dbp *DebuggedProcess) CurrentPCForDisplay() (uint64, error) {
+	pc, err := dbp.currentGoroutine.pc()
+	if err != nil {
+		return pc, err
+	} else if _, ok := dbp.Breakpoints[pc-1]; ok {
+		return pc - 1, err
+	} else {
+		return pc, err
+	}
+}
+
 func (dbp *DebuggedProcess) CurrentPC() (uint64, error) {
-	return dbp.CurrentThread.CurrentPC()
+	return dbp.currentGoroutine.pc()
 }
 
 // Returns the value of the named symbol.
 func (dbp *DebuggedProcess) EvalSymbol(name string) (*Variable, error) {
-	return dbp.CurrentThread.EvalSymbol(name)
+	if strings.HasPrefix(name, "0x") {
+		addr, err := strconv.ParseInt(name, 0, 64)
+		if err != nil {
+			return nil, err
+		}
+		d, err := dbp.readMemory(uintptr(addr), 8)
+		return &Variable{name, "0x" + strconv.FormatUint(binary.LittleEndian.Uint64(d), 16), "uint64"}, nil
+	} else {
+		return dbp.currentGoroutine.EvalSymbol(name)
+	}
 }
 
 // Returns a reader for the dwarf data
@@ -205,6 +250,8 @@ func (pe ProcessExitedError) Error() string {
 }
 
 func handleBreakpoint(dbp *DebuggedProcess, pid int) error {
+	//log.Print("handleBreakpoint")
+
 	thread := dbp.Threads[pid]
 	if pid != dbp.CurrentThread.Id {
 		fmt.Printf("thread context changed from %d to %d\n", dbp.CurrentThread.Id, pid)
@@ -226,7 +273,7 @@ func handleBreakpoint(dbp *DebuggedProcess, pid int) error {
 				return err
 			}
 		}
-		stopTheWorld(dbp)
+		//stopTheWorld(dbp)
 		return nil
 	}
 
@@ -234,7 +281,7 @@ func handleBreakpoint(dbp *DebuggedProcess, pid int) error {
 	for _, bp := range dbp.HWBreakpoints {
 		if bp.Addr == pc {
 			if !bp.temp {
-				stopTheWorld(dbp)
+				//stopTheWorld(dbp)
 			}
 			return nil
 		}
@@ -242,7 +289,7 @@ func handleBreakpoint(dbp *DebuggedProcess, pid int) error {
 	// Check to see if we have hit a software breakpoint.
 	if bp, ok := dbp.Breakpoints[pc-1]; ok {
 		if !bp.temp {
-			stopTheWorld(dbp)
+			//stopTheWorld(dbp)
 		}
 		return nil
 	}
@@ -321,4 +368,62 @@ func (dbp *DebuggedProcess) LoadInformation() error {
 	wg.Wait()
 
 	return nil
+}
+
+func (dbp *DebuggedProcess) Listen(handler func()) {
+	defer func() {
+		for _, g := range dbp.goroutines {
+			close(g.chcont)
+		}
+	}()
+	for evt := range dbp.chTrap {
+		log.Printf("receive chTrap: %v", evt)
+
+		if evt.typ != TE_EXCEPTION && evt.err != nil {
+			log.Fatal(evt.err)
+			return
+		}
+
+		switch evt.typ {
+		case TE_MANUAL, TE_BREAKPOINT:
+			g, ok := dbp.goroutines[evt.gid]
+			if !ok {
+				g = dbp.addGoroutine(evt.gid, evt.tid)
+				dbp.currentGoroutine = g
+				go func(g *Goroutine) {
+					//log.Print("read chcont")
+					g.chwait = <-g.chcont
+
+					//log.Print("start handler:", g.id)
+					handler()
+				}(g)
+			} else {
+				dbp.currentGoroutine = g
+			}
+
+			chwait := make(chan struct{})
+
+			//continue handler
+			//log.Print("write chcont")
+			g.chcont <- chwait
+
+			//wait for handler
+			<-chwait
+			//log.Print("read chwait")
+
+			//dbp.resume()
+			threadResume(g.tid)
+		case TE_EXCEPTION:
+			if evt.err != nil {
+				fmt.Printf("Exception occurred: %s", evt.err.Error())
+			} else {
+				fmt.Print("Unknown exception occurred")
+			}
+			fmt.Print("Process exit")
+			return
+		case TE_EXIT:
+			fmt.Printf("Process exit normally")
+			return
+		}
+	}
 }

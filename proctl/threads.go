@@ -3,6 +3,7 @@ package proctl
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"syscall"
 
 	"github.com/chendesheng/delve/dwarf/frame"
@@ -14,11 +15,16 @@ type ThreadContext struct {
 	Id      int
 	Process *DebuggedProcess
 	Status  *syscall.WaitStatus
+
+	firstTrap bool
+	chTrap    chan chan struct{}
+	chYield   chan struct{}
 }
 
 type Registers interface {
 	PC() uint64
 	SP() uint64
+	rax() uint64
 	SetPC(int, uint64) error
 	Rflags() uint64
 	SetRflags(int, uint64) error
@@ -70,12 +76,12 @@ func (thread *ThreadContext) PrintInfo() error {
 // will set a hardware breakpoint. Otherwise we fall back to software
 // breakpoints, which are a bit more work for us.
 func (thread *ThreadContext) Break(addr uint64) (*Breakpoint, error) {
-	return thread.Process.setBreakpoint(thread.Id, addr)
+	return thread.Process.setBreakpoint(addr)
 }
 
 // Clears a breakpoint, and removes it from the process level break point table.
 func (thread *ThreadContext) Clear(addr uint64) (*Breakpoint, error) {
-	return thread.Process.clearBreakpoint(thread.Id, addr)
+	return thread.Process.clearBreakpoint(addr)
 }
 
 func (thread *ThreadContext) Continue() error {
@@ -93,7 +99,15 @@ func (thread *ThreadContext) Continue() error {
 		}
 	}
 
-	return ptraceCont(thread.Process.Pid, thread.Id)
+	thread.yield()
+	return nil
+}
+
+func (thread *ThreadContext) yield() {
+	thread.chYield <- struct{}{}
+	log.Printf("send to chYield:0x%x", thread.Id)
+	thread.chYield = <-thread.chTrap
+	log.Printf("recive from chTrap:0x%x", thread.Id)
 }
 
 // Single steps this thread a single instruction, ensuring that
@@ -112,6 +126,7 @@ func (thread *ThreadContext) Step() (err error) {
 			return err
 		}
 
+		log.Printf("SetPC:0x%x", bp.Addr)
 		// Reset program counter to our restored instruction.
 		err = regs.SetPC(thread.Id, bp.Addr)
 		if err != nil {
@@ -120,18 +135,32 @@ func (thread *ThreadContext) Step() (err error) {
 
 		// Restore breakpoint now that we have passed it.
 		defer func() {
-			_, err = thread.Break(bp.Addr)
+			log.Printf("add breakpoint back:0x%x", bp.Addr)
+			thread.Break(bp.Addr)
 		}()
 	}
 
-	err = singleStep(thread.Process.Pid, thread.Id)
+	err = singleStep(thread.Id)
 	if err != nil {
 		return fmt.Errorf("step failed: %s", err.Error())
 	}
 
-	err = thread.wait()
+	thread.yield()
+
+	//	err = thread.wait()
+	//	if err != nil {
+	//		return err
+	//	}
+	//
+
+	regs, err = registers(thread.Id)
 	if err != nil {
 		return err
+	}
+
+	if rflags := regs.Rflags(); rflags&FLAGS_TF != 0 {
+		log.Printf("SetRflags:0x%x", rflags)
+		regs.SetRflags(thread.Id, rflags&^FLAGS_TF)
 	}
 
 	return nil
@@ -166,11 +195,17 @@ func (thread *ThreadContext) Next() (err error) {
 			return err
 		}
 
-		if pc, err = thread.CurrentPC(); err != nil {
+		regs, err := thread.Registers()
+		if err != nil {
 			return err
 		}
+		pc, rflags := regs.PC(), regs.Rflags()
+		log.Printf("pc: 0x%x", pc)
+		log.Printf("rflags: 0x%x", rflags)
+		log.Printf("ret: 0x%x", ret)
 
 		if !fde.Cover(pc) && pc != ret {
+			log.Print("continueToReturnAddress")
 			if err := thread.continueToReturnAddress(pc, fde); err != nil {
 				if _, ok := err.(InvalidAddressError); !ok {
 					return err
@@ -182,6 +217,7 @@ func (thread *ThreadContext) Next() (err error) {
 		}
 
 		if _, nl, _ := thread.Process.GoSymTable.PCToLine(pc); nl != l {
+			log.Printf("line:%d", nl)
 			break
 		}
 	}
@@ -197,36 +233,34 @@ func (thread *ThreadContext) continueToReturnAddress(pc uint64, fde *frame.Frame
 		// has not had a chance to modify its' stack
 		// and change our offset.
 		addr := thread.ReturnAddressFromOffset(0)
-		bp, err := thread.Break(addr)
+
+		originalData, err := thread.Process.readMemory(uintptr(addr), 1)
 		if err != nil {
-			if _, ok := err.(BreakpointExistsError); !ok {
-				return err
-			}
+			return err
 		}
-		bp.temp = true
+		_, err = thread.Process.writeMemory(uintptr(addr), []byte{0xCC})
+		if err != nil {
+			return err
+		}
+
 		// Ensure we cleanup after ourselves no matter what.
-		defer thread.clearTempBreakpoint(bp.Addr)
+		defer func() {
+			if _, err := thread.Process.writeMemory(uintptr(addr), originalData); err != nil {
+				log.Fatal(err)
+			}
+		}()
 
 		for {
-			err = thread.Continue()
-			if err != nil {
-				return err
-			}
-			// We wait on -1 here because once we continue this
-			// thread, it's very possible the scheduler could of
-			// change the goroutine context on us, we there is
-			// no guarantee that waiting on this tid will ever
-			// return.
-			wpid, _, err := trapWait(thread.Process, -1)
-			if err != nil {
-				return err
-			}
-			if wpid != thread.Id {
-				thread = thread.Process.Threads[wpid]
-				thread.Process.CurrentThread = thread.Process.Threads[wpid]
-			}
+			thread.yield()
+
+			regs, _ := thread.Registers()
 			pc, _ = thread.CurrentPC()
-			if (pc-1) == bp.Addr || pc == bp.Addr {
+			rflags := regs.Rflags()
+			log.Printf("continueToReturnAddress:pc:0x%x,addr:0x%x,rflags:0x%x", pc, addr, rflags)
+			if (pc-1) == addr || pc == addr {
+				if (pc - 1) == addr {
+					regs.SetPC(thread.Id, addr)
+				}
 				break
 			}
 		}
@@ -244,7 +278,7 @@ func (thread *ThreadContext) ReturnAddressFromOffset(offset int64) uint64 {
 	}
 
 	retaddr := int64(regs.SP()) + offset
-	data, err := thread.readMemory(uintptr(retaddr), 8)
+	data, err := thread.Process.readMemory(uintptr(retaddr), 8)
 	if err != nil {
 		panic("Could not read from memory")
 	}

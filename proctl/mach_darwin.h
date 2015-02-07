@@ -8,7 +8,7 @@ typedef x86_thread_state64_t Regs;
 typedef unsigned long ulong;
 
 int gettask(int pid, int* task);
-//int getthreads(int task, void* threads, int* cnt);
+int getthreads(int task, void* threads, int* cnt);
 int getregs(int tid, Regs* regs);
 int setregs(int tid, Regs* regs);
 int vmread(int pid, ulong addr, int size, void* data, ulong* outsz);

@@ -3,6 +3,9 @@ package cli
 import (
 	"fmt"
 	"io"
+	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,6 +20,11 @@ import (
 const historyFile string = ".dbg_history"
 
 func Run(run bool, pid int, args []string) {
+	go func() {
+		log.Print(http.ListenAndServe(":6061", nil))
+	}()
+
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	var (
 		dbp *proctl.DebuggedProcess
 		err error
@@ -62,27 +70,33 @@ func Run(run bool, pid int, args []string) {
 	goreadline.LoadHistoryFromFile(historyFile)
 	fmt.Println("Type 'help' for list of commands.")
 
-	for {
-		cmdstr, err := promptForInput()
-		if err != nil {
-			if err == io.EOF {
+	dbp.Listen(func() {
+		for {
+			if err := command.PrintContext(dbp); err != nil {
+				fmt.Print("Print context faild: ", err.Error())
+			}
+
+			cmdstr, err := promptForInput()
+			if err != nil {
+				if err == io.EOF {
+					handleExit(dbp, 0)
+				}
+				die(1, "Prompt for input failed.\n")
+			}
+
+			cmdstr, args := parseCommand(cmdstr)
+
+			if cmdstr == "exit" {
 				handleExit(dbp, 0)
 			}
-			die(1, "Prompt for input failed.\n")
-		}
 
-		cmdstr, args := parseCommand(cmdstr)
-
-		if cmdstr == "exit" {
-			handleExit(dbp, 0)
+			cmd := cmds.Find(cmdstr)
+			err = cmd(dbp, args...)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Command failed: %s\n", err)
+			}
 		}
-
-		cmd := cmds.Find(cmdstr)
-		err = cmd(dbp, args...)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Command failed: %s\n", err)
-		}
-	}
+	})
 }
 
 func handleExit(dbp *proctl.DebuggedProcess, status int) {
