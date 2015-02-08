@@ -1,31 +1,75 @@
 package proctl
 
+//#include "mach_darwin.h"
+import "C"
+
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"runtime"
+	"runtime/debug"
+	"unsafe"
 
 	"github.com/chendesheng/delve/dwarf/frame"
 )
 
-type Goroutine struct {
-	dbp    *DebuggedProcess
-	id     int
-	tid    int
-	chwait chan struct{}
-	chcont chan chan struct{}
+const (
+	FLAGS_TF = 0x100 // x86 single-step processor flag
+)
+
+func macherr(n C.int) error {
+	if n == 0 { //success
+		return nil
+	} else {
+		println(string(debug.Stack()))
+		return errors.New(C.GoString(C.mach_error_string(C.mach_error_t(n))))
+	}
 }
 
-func (g *Goroutine) pc() (uint64, error) {
-	regs, err := registers(g.tid)
+type Regs C.Regs
+
+func (r *Regs) PC() uint64 {
+	return uint64(r.__rip)
+}
+
+func (r *Regs) SP() uint64 {
+	return uint64(r.__rsp)
+}
+
+func (r *Regs) SetPC(tid int, pc uint64) error {
+	r.__rip = C.__uint64_t(pc)
+	return macherr(C.setregs(C.int(tid), (*C.Regs)(unsafe.Pointer(r))))
+}
+
+func (r *Regs) Rflags() uint64 {
+	return uint64(r.__rflags)
+}
+
+func (r *Regs) SetRflags(tid int, rflags uint64) error {
+	r.__rflags = C.__uint64_t(rflags)
+	return macherr(C.setregs(C.int(tid), (*C.Regs)(unsafe.Pointer(r))))
+}
+
+func mustGetRegs(tid int) Registers {
+	regs, err := registers(tid)
 	if err != nil {
-		return 0, err
+		log.Fatal(err)
 	}
 
-	return regs.PC(), nil
-
+	return regs
 }
+
+func registers(tid int) (Registers, error) {
+	r := Regs{}
+	if err := macherr(C.getregs(C.int(tid), (*C.Regs)(unsafe.Pointer(&r)))); err == nil {
+		return &r, nil
+	} else {
+		return nil, err
+	}
+}
+
 func (g *Goroutine) next() error {
 	pc, err := g.pc()
 	if err != nil {
@@ -80,16 +124,10 @@ func (g *Goroutine) next() error {
 }
 
 func (g *Goroutine) cont() error {
-	regs, err := registers(g.tid)
+	err := g.next()
 	if err != nil {
-		return fmt.Errorf("could not get registers %s", err)
-	}
-	log.Printf("cont:%#v", regs.PC())
-
-	if _, ok := g.dbp.Breakpoints[regs.PC()-1]; ok {
-		err := g.step()
-		if err != nil {
-			return fmt.Errorf("could not step %s", err)
+		if _, ok := err.(frame.ErrUnknownFDE); !ok {
+			return err
 		}
 	}
 
@@ -169,7 +207,6 @@ func (g *Goroutine) wait() {
 
 		g.removeSingleStep()
 	} else {
-		g.removeSingleStep()
 		runtime.Goexit()
 	}
 

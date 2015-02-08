@@ -89,21 +89,6 @@ func (dbp *DebuggedProcess) addGoroutine(gid int, tid int) *Goroutine {
 	return dbp.goroutines[gid]
 }
 
-func (dbp *DebuggedProcess) addThread(tid int) (*ThreadContext, error) {
-	dbp.Threads[tid] = &ThreadContext{
-		Id:        tid,
-		Process:   dbp,
-		firstTrap: true,
-		chTrap:    make(chan chan struct{}),
-	}
-
-	return dbp.Threads[tid], nil
-}
-
-func (dbp *DebuggedProcess) AttachThread(tid int) (*ThreadContext, error) {
-	return dbp.addThread(tid)
-}
-
 func (dbp *DebuggedProcess) RequestManualStop() {
 	dbp.suspend()
 	dbp.chTrap <- &trapEvent{
@@ -207,7 +192,6 @@ func (dbp *DebuggedProcess) getThreads() ([]int, error) {
 func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	dbp := DebuggedProcess{
 		Pid:         pid,
-		Threads:     make(map[int]*ThreadContext),
 		Breakpoints: make(map[uint64]*Breakpoint),
 		debuggedProcess: debuggedProcess{
 			goroutines: make(map[int]*Goroutine),

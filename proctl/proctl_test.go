@@ -139,14 +139,18 @@ func TestContinue(t *testing.T) {
 	withTestProcess("../_fixtures/continuetestprog", t, func(p *DebuggedProcess) {
 		err := p.Continue()
 		if err != nil {
-			if _, ok := err.(ProcessExitedError); !ok {
-				t.Fatal(err)
-			}
+			t.Error(err)
 		}
 
-		if p.Status().ExitStatus() != 0 {
-			t.Fatal("Process did not exit successfully", p.Status().ExitStatus())
+		state, err := p.Process.Wait()
+		if err != nil {
+			t.Error(err)
 		}
+
+		if !state.Exited() {
+			t.Fatal("Process did not exit successfully:", state)
+		}
+
 	})
 }
 

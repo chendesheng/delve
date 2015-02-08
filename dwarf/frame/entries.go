@@ -6,6 +6,14 @@ import (
 	"github.com/derekparker/rbtree"
 )
 
+type ErrUnknownFDE struct {
+	pc uint64
+}
+
+func (e ErrUnknownFDE) Error() string {
+	return fmt.Sprintf("Could not find FDE for %#v", e.pc)
+}
+
 // Represents a Common Information Entry in
 // the Dwarf .debug_frame section.
 type CommonInformationEntry struct {
@@ -64,7 +72,7 @@ func NewFrameIndex() *FrameDescriptionEntries {
 func (fdes *FrameDescriptionEntries) FDEForPC(pc uint64) (*FrameDescriptionEntry, error) {
 	node, ok := fdes.Find(Addr(pc))
 	if !ok {
-		return nil, fmt.Errorf("Could not find FDE for %#v", pc)
+		return nil, ErrUnknownFDE{pc}
 	}
 
 	return node.(*FrameDescriptionEntry), nil

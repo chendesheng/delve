@@ -31,8 +31,6 @@ type DebuggedProcess struct {
 	FrameEntries        *frame.FrameDescriptionEntries
 	HWBreakpoints       [4]*Breakpoint
 	Breakpoints         map[uint64]*Breakpoint
-	Threads             map[int]*ThreadContext
-	CurrentThread       *ThreadContext
 	breakpointIDCounter int
 	running             bool
 	halt                bool
@@ -155,11 +153,6 @@ func (dbp *DebuggedProcess) ClearByLocation(loc string) (*Breakpoint, error) {
 	return dbp.clearBreakpoint(addr)
 }
 
-// Returns the status of the current main thread context.
-func (dbp *DebuggedProcess) Status() *syscall.WaitStatus {
-	return dbp.CurrentThread.Status
-}
-
 // Loop through all threads, printing their information
 // to the console.
 func (dbp *DebuggedProcess) PrintThreadInfo() error {
@@ -247,54 +240,6 @@ type ProcessExitedError struct {
 
 func (pe ProcessExitedError) Error() string {
 	return fmt.Sprintf("process %d has exited", pe.pid)
-}
-
-func handleBreakpoint(dbp *DebuggedProcess, pid int) error {
-	//log.Print("handleBreakpoint")
-
-	thread := dbp.Threads[pid]
-	if pid != dbp.CurrentThread.Id {
-		fmt.Printf("thread context changed from %d to %d\n", dbp.CurrentThread.Id, pid)
-		dbp.CurrentThread = thread
-	}
-
-	pc, err := thread.CurrentPC()
-	if err != nil {
-		return fmt.Errorf("could not get current pc %s", err)
-	}
-
-	// Check to see if we hit a runtime.breakpoint
-	fn := dbp.GoSymTable.PCToFunc(pc)
-	if fn != nil && fn.Name == "runtime.breakpoint" {
-		// step twice to get back to user code
-		for i := 0; i < 2; i++ {
-			err = thread.Step()
-			if err != nil {
-				return err
-			}
-		}
-		//stopTheWorld(dbp)
-		return nil
-	}
-
-	// Check for hardware breakpoint
-	for _, bp := range dbp.HWBreakpoints {
-		if bp.Addr == pc {
-			if !bp.temp {
-				//stopTheWorld(dbp)
-			}
-			return nil
-		}
-	}
-	// Check to see if we have hit a software breakpoint.
-	if bp, ok := dbp.Breakpoints[pc-1]; ok {
-		if !bp.temp {
-			//stopTheWorld(dbp)
-		}
-		return nil
-	}
-
-	return fmt.Errorf("did not hit recognized breakpoint")
 }
 
 func (dbp *DebuggedProcess) parseDebugFrame(exe exefile, wg *sync.WaitGroup) {
@@ -435,7 +380,7 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 			fmt.Print("Process exit")
 			return
 		case TE_EXIT:
-			fmt.Printf("Process exit normally")
+			fmt.Println("Process exit normally")
 			return
 		}
 	}
