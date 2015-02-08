@@ -26,3 +26,5 @@ proctl/concurrentprog
 *.asm
 
 proctl/testnextprog
+
+_fixtures/helloworld

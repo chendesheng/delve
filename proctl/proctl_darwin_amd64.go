@@ -228,22 +228,22 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	head.Len = nth
 	head.Cap = nth
 
-	//	if err := dbp.suspend(); err != nil {
-	//		return nil, err
-	//	}
-
-	if err := threadSuspend(int(threads[0])); err != nil {
+	if err := dbp.suspend(); err != nil {
 		return nil, err
 	}
 
 	log.Printf("threads:%#v", threads)
 
+	//Put callback here because we need closure to access the dbp object. I don't like global variable.
 	fnCatchExceptionRaise = func(task C.int, thread C.int, exception C.exception_type_t, code C.exception_data_t, ncode C.mach_msg_type_number_t) int {
-		regs, _ := registers(int(thread))
-		log.Printf("task:%d, thread:0x%x, exception:%d, pc:0x%x", task, thread, exception, regs.PC())
+		//This function should return ASAP, if it take too long will trigger go sched preemption mechanism.
+		//Delay any time-consuming operation if possible
 
-		//err := dbp.suspend()
-		err := threadSuspend(int(thread))
+		//regs, _ := registers(int(thread))
+		//log.Printf("task:%d, thread:0x%x, exception:%d, pc:0x%x", task, thread, exception, regs.PC())
+
+		//It looks like suspend will not take effect until this function return
+		err := dbp.suspend()
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -260,13 +260,9 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 			//log.Fatal(fmt.Sprintf("exception: %d", int(exception)))
 		}
 
-		gid, err := dbp.getGoroutineId(tid)
-		if err != nil {
-			log.Fatal(err)
-		}
-
+		//This won't block because chTrap is buffered
 		dbp.chTrap <- &trapEvent{
-			gid: gid,
+			gid: -1, // -1 means the receiver should find goroutine from tid itself, find goroutine id may takes too long time.
 			tid: tid,
 			typ: evttype,
 		}
@@ -275,13 +271,11 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	}
 
 	//stop at start
-	go func() {
-		dbp.chTrap <- &trapEvent{
-			gid: 0,
-			tid: int(threads[0]),
-			typ: TE_MANUAL,
-		}
-	}()
+	dbp.chTrap <- &trapEvent{
+		gid: 0,
+		tid: int(threads[0]),
+		typ: TE_MANUAL,
+	}
 
 	go waitroutine(&dbp)
 	go C.server()
@@ -351,13 +345,13 @@ func (dbp *DebuggedProcess) suspend() error {
 	return macherr(C.tasksuspend(C.int(dbp.Pid)))
 }
 
-func threadSuspend(tid int) error {
-	return macherr(C.int(C.thread_suspend(C.thread_act_t(tid))))
-}
+//func threadSuspend(tid int) error {
+//	return macherr(C.int(C.thread_suspend(C.thread_act_t(tid))))
+//}
 
-func threadResume(tid int) error {
-	return macherr(C.int(C.thread_resume(C.thread_act_t(tid))))
-}
+//func threadResume(tid int) error {
+//	return macherr(C.int(C.thread_resume(C.thread_act_t(tid))))
+//}
 
 func (dbp *DebuggedProcess) writeMemory(addr uintptr, data []byte) (int, error) {
 	log.Printf("write memory:%#v, %#v", uint64(addr), data)

@@ -384,9 +384,18 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 			return
 		}
 
+		if evt.gid == -1 {
+			gid, err := dbp.getGoroutineId(evt.tid)
+			if err != nil {
+				log.Fatal(err)
+			}
+			evt.gid = gid
+		}
+
 		switch evt.typ {
 		case TE_MANUAL, TE_BREAKPOINT:
 			g, ok := dbp.goroutines[evt.gid]
+			oldg := g
 			if !ok {
 				g = dbp.addGoroutine(evt.gid, evt.tid)
 				dbp.currentGoroutine = g
@@ -401,6 +410,10 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 				dbp.currentGoroutine = g
 			}
 
+			if dbp.currentGoroutine != oldg {
+				fmt.Printf("Switch to goroutine %d\n", g.id)
+			}
+
 			chwait := make(chan struct{})
 
 			//continue handler
@@ -411,8 +424,8 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 			<-chwait
 			//log.Print("read chwait")
 
-			//dbp.resume()
-			threadResume(g.tid)
+			dbp.resume()
+			//threadResume(g.tid)
 		case TE_EXCEPTION:
 			if evt.err != nil {
 				fmt.Printf("Exception occurred: %s", evt.err.Error())
