@@ -8,30 +8,39 @@ func (dbp *DebuggedProcess) setBreakpoint(addr uint64) (*Breakpoint, error) {
 		return nil, InvalidAddressError{address: addr}
 	}
 
-	// Fall back to software breakpoint. 0xCC is INT 3, software
 	// breakpoint trap interrupt.
 	originalData, err := dbp.readMemory(uintptr(addr), 1)
 	if err != nil {
 		return nil, err
 	}
+
 	_, err = dbp.writeMemory(uintptr(addr), []byte{0xCC})
 	if err != nil {
 		return nil, err
 	}
 
-	if !dbp.BreakpointExists(addr) {
-		dbp.Breakpoints[addr] = dbp.newBreakpoint(fn.Name, f, l, addr, originalData)
+	b := dbp.Breakpoints[addr]
+	if b == nil {
+		b = dbp.newBreakpoint(fn.Name, f, l, addr, originalData)
+		dbp.Breakpoints[addr] = b
 	}
-	return dbp.Breakpoints[addr], nil
+	b.count++
+	println("b.count:", b.count)
+	return b, nil
 }
 
 func (dbp *DebuggedProcess) clearBreakpoint(addr uint64) (*Breakpoint, error) {
 	// Check for software breakpoint
 	if bp, ok := dbp.Breakpoints[addr]; ok {
-		if _, err := dbp.writeMemory(uintptr(bp.Addr), bp.OriginalData); err != nil {
-			return nil, fmt.Errorf("could not clear breakpoint %s", err)
+		bp.count--
+		println("bp.count:", bp.count)
+		if bp.count <= 0 {
+			delete(dbp.Breakpoints, addr)
+
+			if _, err := dbp.writeMemory(uintptr(bp.Addr), bp.OriginalData); err != nil {
+				return nil, fmt.Errorf("could not clear breakpoint %s", err)
+			}
 		}
-		delete(dbp.Breakpoints, addr)
 		return bp, nil
 	}
 	return nil, fmt.Errorf("No breakpoint currently set for %#v", addr)

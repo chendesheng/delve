@@ -114,7 +114,12 @@ func (dbp *DebuggedProcess) FindLocation(str string) (uint64, error) {
 
 // Sets a breakpoint in the current thread.
 func (dbp *DebuggedProcess) Break(addr uint64) (*Breakpoint, error) {
-	return dbp.setBreakpoint(addr)
+	b, ok := dbp.Breakpoints[addr]
+	if ok {
+		return nil, BreakpointExistsError{b.File, b.Line, addr}
+	} else {
+		return dbp.setBreakpoint(addr)
+	}
 }
 
 // Sets a breakpoint by location string (function, file+line, address)
@@ -375,7 +380,7 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 			if evt.err != nil {
 				fmt.Printf("Exception occurred: %s", evt.err.Error())
 			} else {
-				fmt.Print("Unknown exception occurred")
+				fmt.Println("Unknown exception occurred")
 			}
 			fmt.Print("Process exit")
 			return

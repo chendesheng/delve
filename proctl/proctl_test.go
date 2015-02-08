@@ -438,7 +438,7 @@ func TestConcurrent(t *testing.T) {
 	var testfile, _ = filepath.Abs("../_fixtures/concurrentprog")
 
 	withTestProcess(testfile, t, func(p *DebuggedProcess) {
-		start, _, err := p.GoSymTable.LineToPC(testfile+".go", 14)
+		start, _, err := p.GoSymTable.LineToPC(testfile+".go", 12)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -446,7 +446,26 @@ func TestConcurrent(t *testing.T) {
 		p.Break(start)
 
 		p.Continue()
+		p.Continue()
+		p.Continue()
+	})
+}
 
+func TestConcurrent2(t *testing.T) {
+	log.SetFlags(log.Lshortfile | log.LstdFlags)
+
+	var testfile, _ = filepath.Abs("../_fixtures/concurrentprog")
+
+	withTestProcess(testfile, t, func(p *DebuggedProcess) {
+		start, _, err := p.GoSymTable.LineToPC(testfile+".go", 11)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		p.Break(start)
+
+		p.Continue()
+		p.Continue()
 		p.Continue()
 	})
 }

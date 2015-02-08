@@ -13,6 +13,7 @@ type Breakpoint struct {
 	OriginalData []byte
 	ID           int
 	temp         bool
+	count        int
 }
 
 type BreakpointExistsError struct {
@@ -26,11 +27,6 @@ func (bpe BreakpointExistsError) Error() string {
 }
 
 func (dbp *DebuggedProcess) BreakpointExists(addr uint64) bool {
-	for _, bp := range dbp.HWBreakpoints {
-		if bp != nil && bp.Addr == addr {
-			return true
-		}
-	}
 	if _, ok := dbp.Breakpoints[addr]; ok {
 		return true
 	}

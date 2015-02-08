@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"runtime/debug"
 	"syscall"
 	"unsafe"
 )
@@ -339,6 +340,7 @@ func (dbp *DebuggedProcess) suspend() error {
 
 func (dbp *DebuggedProcess) writeMemory(addr uintptr, data []byte) (int, error) {
 	log.Printf("write memory:%#v, %#v", uint64(addr), data)
+	log.Print(string(debug.Stack()))
 	if err := macherr(C.vmwrite(C.int(dbp.Pid), C.ulong(addr), unsafe.Pointer(&data[0]), C.int(len(data)))); err != nil {
 		return 0, err
 	} else {

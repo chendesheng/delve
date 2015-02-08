@@ -102,7 +102,7 @@ func (g *Goroutine) next() error {
 		log.Printf("rflags: 0x%x", rflags)
 		log.Printf("ret: 0x%x", ret)
 
-		if !fde.Cover(pc) && pc != ret {
+		if !fde.Cover(pc) && pc != ret { //goto different function
 			log.Print("continueToReturnAddress")
 			if err := g.continueToReturnAddress(pc, fde); err != nil {
 				if _, ok := err.(InvalidAddressError); !ok {
@@ -236,19 +236,14 @@ func (g *Goroutine) continueToReturnAddress(pc uint64, fde *frame.FrameDescripti
 	// and change our offset.
 	addr := g.ReturnAddressFromOffset(0)
 
-	originalData, err := g.dbp.readMemory(uintptr(addr), 1)
-	if err != nil {
-		return err
-	}
-	_, err = g.dbp.writeMemory(uintptr(addr), []byte{0xCC})
-	if err != nil {
+	if _, err := g.dbp.setBreakpoint(addr); err != nil {
 		return err
 	}
 
 	// Ensure we cleanup after ourselves no matter what.
 	defer func() {
-		if _, err := g.dbp.writeMemory(uintptr(addr), originalData); err != nil {
-			log.Fatal(err)
+		if _, err := g.dbp.clearBreakpoint(addr); err != nil {
+			log.Print(err)
 		}
 	}()
 
@@ -259,8 +254,11 @@ func (g *Goroutine) continueToReturnAddress(pc uint64, fde *frame.FrameDescripti
 		pc = regs.PC()
 
 		log.Printf("continueToReturnAddress:pc:0x%x,addr:0x%x", pc, addr)
+		if _, ok := g.dbp.Breakpoints[pc-1]; ok {
+			regs.SetPC(g.tid, pc-1)
+		}
+
 		if (pc - 1) == addr {
-			regs.SetPC(g.tid, addr)
 			break
 		}
 	}
