@@ -114,11 +114,11 @@ func (dbp *DebuggedProcess) FindLocation(str string) (uint64, error) {
 
 // Sets a breakpoint in the current thread.
 func (dbp *DebuggedProcess) Break(addr uint64) (*Breakpoint, error) {
-	b, ok := dbp.Breakpoints[addr]
-	if ok {
-		return nil, BreakpointExistsError{b.File, b.Line, addr}
+	bp, ok := dbp.Breakpoints[addr]
+	if ok && !bp.isTemp() {
+		return nil, BreakpointExistsError{bp.File, bp.Line, addr}
 	} else {
-		return dbp.setBreakpoint(addr)
+		return dbp.setBreakpoint(addr, -1)
 	}
 }
 
@@ -139,7 +139,7 @@ func (dbp *DebuggedProcess) PrintBreakpoints() {
 
 // Clears a breakpoint in the current thread.
 func (dbp *DebuggedProcess) Clear(addr uint64) (*Breakpoint, error) {
-	return dbp.clearBreakpoint(addr)
+	return dbp.clearBreakpoint(addr, -1)
 }
 
 // Clears a breakpoint by location (function, file+line, address, breakpoint id)
@@ -155,7 +155,7 @@ func (dbp *DebuggedProcess) ClearByLocation(loc string) (*Breakpoint, error) {
 	if regs.PC()-1 == addr {
 		regs.SetPC(dbp.currentGoroutine.tid, addr)
 	}
-	return dbp.clearBreakpoint(addr)
+	return dbp.clearBreakpoint(addr, -1)
 }
 
 // Loop through all threads, printing their information
@@ -350,8 +350,9 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 				g = dbp.addGoroutine(evt.gid, evt.tid)
 				dbp.currentGoroutine = g
 				go func(g *Goroutine) {
-					//log.Print("read chcont")
-					g.chwait = <-g.chcont
+					if err := g.wait(); err != nil {
+						fmt.Print(err)
+					}
 
 					//log.Print("start handler:", g.id)
 					handler()
@@ -365,17 +366,12 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 			}
 
 			chwait := make(chan struct{})
-
-			//continue handler
-			//log.Print("write chcont")
-			g.chcont <- chwait
+			g.chcont <- &waitarg{chwait, evt.typ}
 
 			//wait for handler
 			<-chwait
-			//log.Print("read chwait")
 
 			dbp.resume()
-			//threadResume(g.tid)
 		case TE_EXCEPTION:
 			if evt.err != nil {
 				fmt.Printf("Exception occurred: %s", evt.err.Error())

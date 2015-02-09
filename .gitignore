@@ -28,3 +28,5 @@ proctl/concurrentprog
 proctl/testnextprog
 
 _fixtures/helloworld
+
+proctl/testprog

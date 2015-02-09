@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func withTestProcess(name string, t *testing.T, fn func(p *DebuggedProcess)) {
@@ -49,7 +50,7 @@ func assertNoError(err error, t *testing.T, s string) {
 }
 
 func currentPC(p *DebuggedProcess, t *testing.T) uint64 {
-	pc, err := p.CurrentPC()
+	pc, err := p.currentGoroutine.pc()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,6 +282,7 @@ func TestNext(t *testing.T) {
 		{41, 40},
 		{40, 41},
 	}
+	println("TestNext")
 
 	fp, err := filepath.Abs("../_fixtures/testnextprog.go")
 	if err != nil {
@@ -290,11 +292,14 @@ func TestNext(t *testing.T) {
 	withTestProcess(executablePath, t, func(p *DebuggedProcess) {
 		pc, _, _ := p.GoSymTable.LineToPC(fp, testcases[0].begin)
 		_, err := p.Break(pc)
-		assertNoError(err, t, "Break()")
-		assertNoError(p.Continue(), t, "Continue()")
+		fmt.Printf("pc:%#v\n", pc)
+		if err == nil {
+			assertNoError(p.Continue(), t, "Continue()")
+		}
 
-		f, ln := currentLineNumber(p, t)
 		for _, tc := range testcases {
+			f, ln := currentLineNumber(p, t)
+			println("line:", ln)
 			if ln != tc.begin {
 				t.Fatalf("Program not stopped at correct spot expected %d was %s:%d", tc.begin, f, ln)
 			}
@@ -311,6 +316,16 @@ func TestNext(t *testing.T) {
 		if len(p.Breakpoints) != 0 {
 			t.Fatal("Not all breakpoints were cleaned up", len(p.Breakpoints))
 		}
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			println("kill")
+			if err := p.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		p.Continue()
 	})
 }
 

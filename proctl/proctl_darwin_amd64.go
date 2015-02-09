@@ -14,6 +14,8 @@ import (
 	"runtime/debug"
 	"syscall"
 	"unsafe"
+
+	"github.com/chendesheng/delve/dwarf/frame"
 )
 
 const (
@@ -84,7 +86,7 @@ func (dbp *DebuggedProcess) addGoroutine(gid int, tid int) *Goroutine {
 		id:     gid,
 		dbp:    dbp,
 		tid:    tid,
-		chcont: make(chan chan struct{}),
+		chcont: make(chan *waitarg),
 	}
 
 	return dbp.goroutines[gid]
@@ -296,6 +298,15 @@ func (dbp *DebuggedProcess) Registers() (Registers, error) {
 
 // Resume process.
 func (dbp *DebuggedProcess) Continue() error {
+	log.Println("Continue()")
+	err := dbp.currentGoroutine.next()
+	if err != nil {
+		//ignore ErrUnknownFDE
+		if _, ok := err.(frame.ErrUnknownFDE); !ok {
+			return err
+		}
+	}
+
 	return dbp.currentGoroutine.cont()
 }
 

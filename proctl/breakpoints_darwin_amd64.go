@@ -2,45 +2,54 @@ package proctl
 
 import "fmt"
 
-func (dbp *DebuggedProcess) setBreakpoint(addr uint64) (*Breakpoint, error) {
+func (dbp *DebuggedProcess) setBreakpoint(addr uint64, gid int) (*Breakpoint, error) {
 	var f, l, fn = dbp.GoSymTable.PCToLine(uint64(addr))
 	if fn == nil {
 		return nil, InvalidAddressError{address: addr}
 	}
 
-	// breakpoint trap interrupt.
-	originalData, err := dbp.readMemory(uintptr(addr), 1)
-	if err != nil {
-		return nil, err
+	bp := dbp.Breakpoints[addr]
+	if bp == nil {
+		originalData, err := dbp.readMemory(uintptr(addr), 1)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = dbp.writeMemory(uintptr(addr), []byte{0xCC})
+		if err != nil {
+			return nil, err
+		}
+
+		bp = dbp.newBreakpoint(fn.Name, f, l, addr, originalData)
+		dbp.Breakpoints[addr] = bp
 	}
 
-	_, err = dbp.writeMemory(uintptr(addr), []byte{0xCC})
-	if err != nil {
-		return nil, err
+	if !bp.belongsTo(gid) {
+		bp.goroutines = append(bp.goroutines, gid)
 	}
 
-	b := dbp.Breakpoints[addr]
-	if b == nil {
-		b = dbp.newBreakpoint(fn.Name, f, l, addr, originalData)
-		dbp.Breakpoints[addr] = b
-	}
-	b.count++
-	println("b.count:", b.count)
-	return b, nil
+	return bp, nil
 }
 
-func (dbp *DebuggedProcess) clearBreakpoint(addr uint64) (*Breakpoint, error) {
+func (dbp *DebuggedProcess) clearBreakpoint(addr uint64, gid int) (*Breakpoint, error) {
 	// Check for software breakpoint
 	if bp, ok := dbp.Breakpoints[addr]; ok {
-		bp.count--
-		println("bp.count:", bp.count)
-		if bp.count <= 0 {
-			delete(dbp.Breakpoints, addr)
+		maxindex := len(bp.goroutines) - 1
+		for i, id := range bp.goroutines {
+			if id == gid {
+				bp.goroutines[i] = bp.goroutines[maxindex]
+				bp.goroutines = bp.goroutines[:maxindex]
+				break
+			}
+		}
 
+		if len(bp.goroutines) == 0 {
 			if _, err := dbp.writeMemory(uintptr(bp.Addr), bp.OriginalData); err != nil {
 				return nil, fmt.Errorf("could not clear breakpoint %s", err)
 			}
+			delete(dbp.Breakpoints, addr)
 		}
+
 		return bp, nil
 	}
 	return nil, fmt.Errorf("No breakpoint currently set for %#v", addr)

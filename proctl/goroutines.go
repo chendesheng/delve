@@ -13,7 +13,12 @@ type Goroutine struct {
 	id     int
 	tid    int
 	chwait chan struct{}
-	chcont chan chan struct{}
+	chcont chan *waitarg
+}
+
+type waitarg struct {
+	chwait chan struct{}
+	typ    int
 }
 
 func (g *Goroutine) pc() (uint64, error) {

@@ -76,10 +76,6 @@ func (g *Goroutine) next() error {
 		return err
 	}
 
-	if bp, ok := g.dbp.Breakpoints[pc-1]; ok {
-		pc = bp.Addr
-	}
-
 	fde, err := g.dbp.FrameEntries.FDEForPC(pc)
 	if err != nil {
 		return err
@@ -123,93 +119,104 @@ func (g *Goroutine) next() error {
 	return nil
 }
 
-func (g *Goroutine) cont() error {
-	err := g.next()
-	if err != nil {
-		if _, ok := err.(frame.ErrUnknownFDE); !ok {
-			return err
-		}
-	}
-
-	g.wait()
-	return nil
-}
-
 func (g *Goroutine) step() error {
 	regs, err := registers(g.tid)
 	if err != nil {
 		return err
 	}
-	log.Printf("step:%#v", regs.PC())
 
-	bp, ok := g.dbp.Breakpoints[regs.PC()-1]
-	if ok {
-		// Clear the breakpoint so that we can continue execution.
-		_, err = g.dbp.clearBreakpoint(bp.Addr)
-		if err != nil {
-			return err
-		}
-
-		log.Printf("SetPC:0x%x", bp.Addr)
-		// Reset program counter to our restored instruction.
-		err = regs.SetPC(g.tid, bp.Addr)
-		if err != nil {
-			return fmt.Errorf("could not set registers %s", err)
-		}
-
-		// Restore breakpoint now that we have passed it.
-		defer func() {
-			log.Printf("add breakpoint back:%#v", bp.Addr)
-			g.dbp.setBreakpoint(bp.Addr)
-		}()
-	}
-
-	err = regs.SetRflags(g.tid, regs.Rflags()|FLAGS_TF)
-	if err != nil {
+	if err := regs.SetRflags(g.tid, regs.Rflags()|FLAGS_TF); err != nil {
 		return fmt.Errorf("step failed: %s", err.Error())
 	}
 
-	g.wait()
-
-	//	regs, err = registers(g.tid)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	if rflags := regs.Rflags(); rflags&FLAGS_TF != 0 {
-	//		log.Printf("SetRflags:0x%x", rflags)
-	//		regs.SetRflags(g.tid, rflags&^FLAGS_TF)
-	//	}
-
-	return nil
+	return g.cont()
 }
 
-func (g *Goroutine) removeSingleStep() {
+func (g *Goroutine) removeSingleStep() error {
 	regs, err := registers(g.tid)
 	if err != nil {
-		log.Print(err)
-		return
+		return err
 	}
 
 	if rflags := regs.Rflags(); rflags&FLAGS_TF != 0 {
 		log.Printf("SetRflags:0x%x", rflags)
-		regs.SetRflags(g.tid, rflags&^FLAGS_TF)
+		if err := regs.SetRflags(g.tid, rflags&^FLAGS_TF); err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
-func (g *Goroutine) wait() {
-	//log.Print("write chwait")
-	g.chwait <- struct{}{}
+//wait until receive interrupt
+func (g *Goroutine) wait() error {
+	log.Println("wait")
 
-	//log.Print("read chcont")
-	if chwait, ok := <-g.chcont; ok {
-		g.chwait = chwait
+	if arg, ok := <-g.chcont; ok {
+		g.chwait = arg.chwait
 
-		g.removeSingleStep()
+		if err := g.removeSingleStep(); err != nil {
+			return err
+		}
+
+		regs, err := registers(g.tid)
+		if err != nil {
+			return err
+		}
+		pc := regs.PC()
+
+		if arg.typ == TE_BREAKPOINT {
+			if bp, ok := g.dbp.Breakpoints[pc-1]; ok {
+				mem, err := g.dbp.readMemory(uintptr(bp.Addr), 1)
+				if err != nil {
+					return err
+				}
+
+				if mem[0] == 0xcc {
+					if _, err := g.dbp.writeMemory(uintptr(bp.Addr), bp.OriginalData); err != nil {
+						return err
+					}
+
+					// Reset program counter to our restored instruction.
+					err = regs.SetPC(g.tid, bp.Addr)
+					if err != nil {
+						return fmt.Errorf("could not set registers %s", err)
+					}
+
+					if bp.isTemp() && !bp.belongsTo(g.id) {
+						//skip breakpoint that is not belongs to current g
+						if err := regs.SetRflags(g.tid, regs.Rflags()|FLAGS_TF); err != nil {
+							return err
+						}
+
+						log.Print("continue to wait")
+						return g.cont()
+					}
+				} else {
+					bp.OriginalData = mem
+					if _, err := g.dbp.writeMemory(uintptr(bp.Addr), []byte{0xcc}); err != nil {
+						return err
+					}
+				}
+			}
+		}
 	} else {
 		runtime.Goexit()
 	}
 
+	return nil
+}
+
+//continue and wait
+func (g *Goroutine) cont() error {
+	log.Println("wait")
+
+	g.chwait <- struct{}{}
+	if err := g.wait(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Takes an offset from RSP and returns the address of the
@@ -236,32 +243,16 @@ func (g *Goroutine) continueToReturnAddress(pc uint64, fde *frame.FrameDescripti
 	// and change our offset.
 	addr := g.ReturnAddressFromOffset(0)
 
-	if _, err := g.dbp.setBreakpoint(addr); err != nil {
+	if _, err := g.dbp.setBreakpoint(addr, g.id); err != nil {
 		return err
 	}
 
 	// Ensure we cleanup after ourselves no matter what.
 	defer func() {
-		if _, err := g.dbp.clearBreakpoint(addr); err != nil {
+		if _, err := g.dbp.clearBreakpoint(addr, g.id); err != nil {
 			log.Print(err)
 		}
 	}()
 
-	for {
-		g.wait()
-
-		regs, _ := registers(g.tid)
-		pc = regs.PC()
-
-		log.Printf("continueToReturnAddress:pc:0x%x,addr:0x%x", pc, addr)
-		if _, ok := g.dbp.Breakpoints[pc-1]; ok {
-			regs.SetPC(g.tid, pc-1)
-		}
-
-		if (pc - 1) == addr {
-			break
-		}
-	}
-
-	return nil
+	return g.cont()
 }

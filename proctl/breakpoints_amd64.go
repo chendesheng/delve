@@ -1,6 +1,9 @@
 package proctl
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
 
 // Represents a single breakpoint. Stores information on the break
 // point including the byte of data that originally was stored at that
@@ -12,8 +15,23 @@ type Breakpoint struct {
 	Addr         uint64
 	OriginalData []byte
 	ID           int
-	temp         bool
-	count        int
+	goroutines   []int //breakpoint belong to those goroutines, -1 means belong to all goroutines
+}
+
+func (bp *Breakpoint) isTemp() bool {
+	return !bp.belongsTo(-1)
+}
+
+func (bp *Breakpoint) belongsTo(gid int) bool {
+	log.Printf("belongsTo:%d\n", gid)
+
+	for _, id := range bp.goroutines {
+		if id == gid {
+			return true
+		}
+	}
+
+	return false
 }
 
 type BreakpointExistsError struct {
@@ -27,8 +45,8 @@ func (bpe BreakpointExistsError) Error() string {
 }
 
 func (dbp *DebuggedProcess) BreakpointExists(addr uint64) bool {
-	if _, ok := dbp.Breakpoints[addr]; ok {
-		return true
+	if bp, ok := dbp.Breakpoints[addr]; ok {
+		return !bp.isTemp() //hide temp breakpoint
 	}
 	return false
 }
