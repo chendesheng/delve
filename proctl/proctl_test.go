@@ -26,10 +26,7 @@ func withTestProcess(name string, t *testing.T, fn func(p *DebuggedProcess)) {
 		t.Fatal("Launch():", err)
 	}
 
-	defer p.Process.Kill()
-
 	p.Listen(func() {
-		//defer close(p.chTrap)
 		fn(p)
 	})
 }
@@ -67,23 +64,33 @@ func currentLineNumber(p *DebuggedProcess, t *testing.T) (string, int) {
 
 func TestStep(t *testing.T) {
 	withTestProcess("../_fixtures/testprog", t, func(p *DebuggedProcess) {
-		helloworldfunc := p.GoSymTable.LookupFunc("main.helloworld")
-		helloworldaddr := helloworldfunc.Entry
+		if p.currentGoroutine.id == 0 {
+			helloworldfunc := p.GoSymTable.LookupFunc("main.helloworld")
+			helloworldaddr := helloworldfunc.Entry
 
-		_, err := p.Break(helloworldaddr)
-		assertNoError(err, t, "Break()")
-		assertNoError(p.Continue(), t, "Continue()")
+			_, err := p.Break(helloworldaddr)
+			assertNoError(err, t, "Break()")
+			assertNoError(p.Continue(), t, "Continue()")
+		}
 
 		regs := getRegisters(p, t)
 		rip := regs.PC()
 
-		err = p.Step()
+		err := p.Step()
 		assertNoError(err, t, "Step()")
 
 		regs = getRegisters(p, t)
 		if rip >= regs.PC() {
 			t.Errorf("Expected %#v to be greater than %#v", regs.PC(), rip)
 		}
+
+		go func() {
+			if err := p.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		p.Continue()
 	})
 }
 
@@ -103,12 +110,14 @@ func TestStepProcess(t *testing.T) {
 			pc, _, _ := p.GoSymTable.LineToPC(fp, lines[i])
 			fmt.Printf("line %d pc:0x%x\n", lines[i], pc)
 
-			if _, err := p.Break(pc); err != nil {
-				t.Fatal(err)
-			}
+			if p.currentGoroutine.id == 0 {
+				if _, err := p.Break(pc); err != nil {
+					t.Fatal(err)
+				}
 
-			if err := p.Continue(); err != nil {
-				t.Fatal(err)
+				if err := p.Continue(); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			for j := 0; j < steptimes[i]; j++ {
@@ -132,6 +141,14 @@ func TestStepProcess(t *testing.T) {
 			if linesafter[i] != l {
 				t.Fatalf("Cases %d: Expect current pc in line %d but %d", i, linesafter[i], l)
 			}
+
+			go func() {
+				if err := p.Process.Kill(); err != nil {
+					t.Fatal(err)
+				}
+			}()
+
+			p.Continue()
 		})
 	}
 }
@@ -156,16 +173,20 @@ func TestContinue(t *testing.T) {
 }
 
 func TestBreakpoint(t *testing.T) {
+	breakpc := uint64(0)
 	withTestProcess("../_fixtures/testprog", t, func(p *DebuggedProcess) {
 		sleepytimefunc := p.GoSymTable.LookupFunc("main.helloworld")
 		sleepyaddr := sleepytimefunc.Entry
 
-		bp, err := p.Break(sleepyaddr)
-		assertNoError(err, t, "Break()")
+		if p.currentGoroutine.id == 0 {
+			bp, err := p.Break(sleepyaddr)
+			assertNoError(err, t, "Break()")
 
-		breakpc := bp.Addr
-		err = p.Continue()
-		assertNoError(err, t, "Continue()")
+			breakpc = bp.Addr
+			err = p.Continue()
+			assertNoError(err, t, "Continue()")
+
+		}
 
 		pc, err := p.CurrentPC()
 		if err != nil {
@@ -188,6 +209,15 @@ func TestBreakpoint(t *testing.T) {
 		if pc == breakpc {
 			t.Fatalf("Step not respected:\nPC:%d\nFN:%d\n", pc, breakpc)
 		}
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			if err := p.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		p.Continue()
 	})
 }
 
@@ -198,14 +228,17 @@ func TestBreakpointInSeperateGoRoutine(t *testing.T) {
 			t.Fatal("No fn exists")
 		}
 
-		_, err := p.Break(fn.Entry)
-		if err != nil {
-			t.Fatal(err)
-		}
+		if p.currentGoroutine.id == 0 {
+			_, err := p.Break(fn.Entry)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		err = p.Continue()
-		if err != nil {
-			t.Fatal(err)
+			err = p.Continue()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
 		}
 
 		pc, err := p.CurrentPC()
@@ -217,6 +250,10 @@ func TestBreakpointInSeperateGoRoutine(t *testing.T) {
 		if f != "testthreads.go" && l != 8 {
 			t.Fatal("Program did not hit breakpoint")
 		}
+
+		p.Process.Kill()
+		os.Remove("./testthreads")
+		os.Exit(0)
 	})
 }
 
@@ -232,6 +269,7 @@ func TestBreakpointWithNonExistantFunction(t *testing.T) {
 func TestClearBreakpoint(t *testing.T) {
 	withTestProcess("../_fixtures/testprog", t, func(p *DebuggedProcess) {
 		fn := p.GoSymTable.LookupFunc("main.sleepytime")
+
 		bp, err := p.Break(fn.Entry)
 		assertNoError(err, t, "Break()")
 
@@ -251,6 +289,16 @@ func TestClearBreakpoint(t *testing.T) {
 		if len(p.Breakpoints) != 0 {
 			t.Fatal("Breakpoint not removed internally")
 		}
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			if err := p.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		p.Continue()
+
 	})
 }
 
@@ -282,8 +330,6 @@ func TestNext(t *testing.T) {
 		{41, 40},
 		{40, 41},
 	}
-	println("TestNext")
-
 	fp, err := filepath.Abs("../_fixtures/testnextprog.go")
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +345,6 @@ func TestNext(t *testing.T) {
 
 		for _, tc := range testcases {
 			f, ln := currentLineNumber(p, t)
-			println("line:", ln)
 			if ln != tc.begin {
 				t.Fatalf("Program not stopped at correct spot expected %d was %s:%d", tc.begin, f, ln)
 			}
@@ -319,7 +364,6 @@ func TestNext(t *testing.T) {
 
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			println("kill")
 			if err := p.Process.Kill(); err != nil {
 				t.Fatal(err)
 			}
@@ -340,18 +384,22 @@ func TestFindReturnAddress(t *testing.T) {
 
 		testsourcefile := testfile + ".go"
 		start, _, err := gsd.LineToPC(testsourcefile, 24)
-		if err != nil {
-			t.Fatal(err)
-		}
 
-		_, err = p.Break(start)
-		if err != nil {
-			t.Fatal(err)
-		}
+		if p.currentGoroutine.id == 0 {
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		err = p.Continue()
-		if err != nil {
-			t.Fatal(err)
+			_, err = p.Break(start)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			err = p.Continue()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
 		}
 
 		regs, err := p.Registers()
@@ -383,6 +431,14 @@ func TestFindReturnAddress(t *testing.T) {
 		if fn.Name != "main.main" {
 			t.Fatalf("return function not found correctly, expected main.main got %s", fn.Name)
 		}
+
+		go func() {
+			if err := p.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		p.Continue()
 	})
 }
 
@@ -390,16 +446,19 @@ func TestNext2(t *testing.T) {
 	var testfile, _ = filepath.Abs("../_fixtures/testprog")
 
 	withTestProcess(testfile, t, func(p *DebuggedProcess) {
-		start, _, err := p.GoSymTable.LineToPC(testfile+".go", 16)
-		if err != nil {
-			t.Fatal(err)
-		}
+		if p.currentGoroutine.id == 0 {
+			start, _, err := p.GoSymTable.LineToPC(testfile+".go", 16)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		_, err = p.Break(start)
-		if err != nil {
-			t.Fatal(err)
+			_, err = p.Break(start)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.Continue()
+			return
 		}
-		p.Continue()
 
 		if err := p.Next(); err != nil {
 			t.Fatal(err)
@@ -409,6 +468,14 @@ func TestNext2(t *testing.T) {
 		if cl != 18 {
 			t.Fatalf("Expect pc at line %d but %d", 18, cl)
 		}
+
+		go func() {
+			if err := p.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		p.Continue()
 	})
 }
 
@@ -416,19 +483,30 @@ func TestNext3(t *testing.T) {
 	var testfile, _ = filepath.Abs("../_fixtures/testprog")
 
 	withTestProcess(testfile, t, func(p *DebuggedProcess) {
-		start, _, err := p.GoSymTable.LineToPC(testfile+".go", 9)
-		if err != nil {
-			t.Fatal(err)
-		}
+		if p.currentGoroutine.id == 0 {
+			start, _, err := p.GoSymTable.LineToPC(testfile+".go", 9)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		_, err = p.Break(start)
-		if err != nil {
-			t.Fatal(err)
+			_, err = p.Break(start)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.Continue()
+			return
 		}
-		p.Continue()
 
 		nextCheckLinenext(p, t, 10)
 		nextCheckLinenext(p, t, 19)
+
+		go func() {
+			if err := p.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+
+		p.Continue()
 	})
 }
 

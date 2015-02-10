@@ -317,6 +317,7 @@ func (dbp *DebuggedProcess) Step() (err error) {
 
 // Step over function calls.
 func (dbp *DebuggedProcess) Next() error {
+	log.Print("Next()")
 	return dbp.currentGoroutine.next()
 }
 

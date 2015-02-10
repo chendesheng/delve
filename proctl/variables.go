@@ -196,9 +196,6 @@ func parseAllMPtr(dbp *DebuggedProcess, reader *dwarf.Reader) (uint64, error) {
 	return uint64(addr), nil
 }
 
-var allgaddr uint64
-var allglenaddr uint64
-
 //Find goroutine id by compare SP with G struct's stack field (stack.lo <= SP <= stack.hi)
 //FIXME: It's hacky, need better way to find thread's goroutine. I've already tried and failed: 1)read tls 2)use procid field (not work on OSX)
 func (dbp *DebuggedProcess) getGoroutineId(tid int) (int, error) {
@@ -215,7 +212,7 @@ func (dbp *DebuggedProcess) getGoroutineId(tid int) (int, error) {
 		return 0, err
 	}
 
-	if allgaddr == 0 {
+	if dbp.allgaddr == 0 {
 		reader.Seek(0)
 		allgentryaddr, err := addressFor(dbp, "runtime.allg", reader)
 		if err != nil {
@@ -227,10 +224,10 @@ func (dbp *DebuggedProcess) getGoroutineId(tid int) (int, error) {
 			return 0, err
 		}
 
-		allgaddr = binary.LittleEndian.Uint64(faddr)
+		dbp.allgaddr = binary.LittleEndian.Uint64(faddr)
 	}
 
-	allgptrbytes, err := dbp.readMemory(uintptr(allgaddr), int(allglen*uint64(ptrsize)))
+	allgptrbytes, err := dbp.readMemory(uintptr(dbp.allgaddr), int(allglen*uint64(ptrsize)))
 	if err != nil {
 		return 0, err
 	}
@@ -337,7 +334,7 @@ func printGoroutineInfo(dbp *DebuggedProcess, addr uint64, reader *dwarf.Reader)
 }
 
 func allglenval(dbp *DebuggedProcess, reader *dwarf.Reader) (uint64, error) {
-	if allglenaddr == 0 {
+	if dbp.allglenaddr == 0 {
 		entry, err := findDwarfEntry("runtime.allglen", reader, false)
 		if err != nil {
 			return 0, err
@@ -351,9 +348,9 @@ func allglenval(dbp *DebuggedProcess, reader *dwarf.Reader) (uint64, error) {
 		if err != nil {
 			return 0, err
 		}
-		allglenaddr = uint64(addr)
+		dbp.allglenaddr = uint64(addr)
 	}
-	val, err := dbp.readMemory(uintptr(allglenaddr), 8)
+	val, err := dbp.readMemory(uintptr(dbp.allglenaddr), 8)
 	if err != nil {
 		return 0, err
 	}

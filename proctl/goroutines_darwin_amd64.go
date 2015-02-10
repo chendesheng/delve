@@ -23,7 +23,7 @@ func macherr(n C.int) error {
 	if n == 0 { //success
 		return nil
 	} else {
-		println(string(debug.Stack()))
+		log.Print(string(debug.Stack()))
 		return errors.New(C.GoString(C.mach_error_string(C.mach_error_t(n))))
 	}
 }
@@ -111,7 +111,7 @@ func (g *Goroutine) next() error {
 		}
 
 		if _, nl, _ := g.dbp.GoSymTable.PCToLine(pc); nl != l {
-			//log.Printf("line:%d", nl)
+			log.Printf("line:%d", nl)
 			break
 		}
 	}
@@ -209,8 +209,6 @@ func (g *Goroutine) wait() error {
 
 //continue and wait
 func (g *Goroutine) cont() error {
-	log.Println("wait")
-
 	g.chwait <- struct{}{}
 	if err := g.wait(); err != nil {
 		return err

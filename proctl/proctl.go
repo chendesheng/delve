@@ -34,6 +34,10 @@ type DebuggedProcess struct {
 	breakpointIDCounter int
 	running             bool
 	halt                bool
+
+	//cache
+	allgaddr    uint64
+	allglenaddr uint64
 }
 
 type ManualStopError struct{}
