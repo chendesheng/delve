@@ -3,8 +3,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"log"
-	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
@@ -20,11 +18,6 @@ import (
 const historyFile string = ".dbg_history"
 
 func Run(run bool, pid int, args []string) {
-	go func() {
-		log.Print(http.ListenAndServe(":6061", nil))
-	}()
-
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	var (
 		dbp *proctl.DebuggedProcess
 		err error

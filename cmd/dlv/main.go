@@ -3,6 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
 	"runtime"
 
@@ -20,15 +23,27 @@ func init() {
 
 func main() {
 	var (
-		pid    int
-		run    bool
-		printv bool
+		pid     int
+		run     bool
+		printv  bool
+		verbose bool
 	)
 
 	flag.IntVar(&pid, "pid", 0, "Pid of running process to attach to.")
 	flag.BoolVar(&run, "run", false, "Compile program and begin debug session.")
 	flag.BoolVar(&printv, "v", false, "Print version number and exit.")
+	flag.BoolVar(&verbose, "verbose", false, "Print debug log")
 	flag.Parse()
+
+	if verbose {
+		go func() {
+			log.Print(http.ListenAndServe(":6061", nil))
+		}()
+
+		log.SetFlags(log.LstdFlags | log.Lshortfile)
+	} else {
+		log.SetOutput(ioutil.Discard)
+	}
 
 	if flag.NFlag() == 0 && len(flag.Args()) == 0 {
 		flag.Usage()
