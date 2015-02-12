@@ -14,8 +14,6 @@ import (
 	"runtime/debug"
 	"syscall"
 	"unsafe"
-
-	"github.com/chendesheng/delve/dwarf/frame"
 )
 
 const (
@@ -86,25 +84,101 @@ func (dbp *DebuggedProcess) addGoroutine(gid int, tid int) *Goroutine {
 		id:     gid,
 		dbp:    dbp,
 		tid:    tid,
-		chcont: make(chan *waitarg),
+		chcont: nil,
 	}
 
 	return dbp.goroutines[gid]
 }
 
-func (dbp *DebuggedProcess) RequestManualStop() {
-	dbp.suspend()
+func (dbp *DebuggedProcess) RequestManualStop() error {
+	log.Print("RequestManualStop:", dbp.currentGoroutine.id)
+
+	//err := syscall.Kill(dbp.Pid, syscall.SIGSTOP)
+	//if err != nil {
+	//	return err
+	//}
+	//wait(dbp.Pid, 0)
+	dbp.sigstop = true
+	//err := dbp.suspend()
+	//if err != nil {
+	//	return err
+	//}
+
+	if dbp.currentGoroutine.id == 0 {
+		//find a goroutine from dbp.goroutines
+		//for gid, g := range dbp.goroutines {
+		//	if gid != 0 {
+		//		dbp.currentGoroutine = g
+		//		dbp.chTrap <- &trapEvent{
+		//			gid: g.id,
+		//			tid: g.tid,
+		//			typ: TE_MANUAL,
+		//		}
+		//		return nil
+		//	}
+		//}
+
+		////find a goroutine from allg
+		//allg, err := dbp.allG()
+		//if err != nil {
+		//	return err
+		//}
+
+		//var g *G
+		//for _, g = range allg {
+		//	if g.id != 0 {
+		//		break
+		//	}
+		//}
+
+		ths, err := dbp.getThreads()
+		if err != nil {
+			return err
+		}
+		log.Print("ths:", ths)
+
+		for _, th := range ths {
+			regs, err := registers(th)
+			log.Printf("regs:%#v", regs)
+			if err != nil {
+				return err
+			}
+
+			gid, err := dbp.getGoroutineId(th)
+			if err != nil {
+				return err
+			}
+
+			if gid > 0 {
+				dbp.currentGoroutine = dbp.addGoroutine(gid, th)
+				dbp.chTrap <- &trapEvent{
+					gid: gid,
+					tid: th,
+					typ: TE_MANUAL,
+				}
+				return nil
+			}
+
+			//if g.stacklo <= regs.SP() && regs.SP() <= g.stackhi {
+			//	break
+			//}
+		}
+	}
+
 	dbp.chTrap <- &trapEvent{
 		gid: dbp.currentGoroutine.id,
 		tid: dbp.currentGoroutine.tid,
 		typ: TE_MANUAL,
 	}
+	return nil
 }
 
 func waitroutine(dbp *DebuggedProcess) {
 	for {
 		var status syscall.WaitStatus
 		syscall.Wait4(dbp.Pid, &status, 0, nil)
+
+		log.Print("Wait4:", status)
 		if status.Exited() {
 			dbp.chTrap <- &trapEvent{
 				gid: 0,
@@ -264,7 +338,7 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 		typ: TE_MANUAL,
 	}
 
-	go waitroutine(&dbp)
+	//go waitroutine(&dbp)
 	go C.server()
 
 	proc, err := os.FindProcess(pid)
@@ -276,7 +350,8 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 
 	if !attach {
 		//only use ptrace for startup
-		err = syscall.PtraceDetach(pid)
+		//err = syscall.PtraceDetach(pid)
+		err := ptracecont(pid)
 		if err != nil {
 			return nil, err
 		}
@@ -290,6 +365,16 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	return &dbp, nil
 }
 
+func ptracecont(pid int) error {
+	log.Print("ptracecont()")
+
+	_, _, err := syscall.Syscall6(syscall.SYS_PTRACE, syscall.PTRACE_CONT, uintptr(pid), 1, 0, 0, 0)
+	if err != syscall.Errno(0) {
+		return err
+	}
+	return nil
+}
+
 // Obtains register values from what Delve considers to be the current
 // thread of the traced process.
 func (dbp *DebuggedProcess) Registers() (Registers, error) {
@@ -299,13 +384,13 @@ func (dbp *DebuggedProcess) Registers() (Registers, error) {
 // Resume process.
 func (dbp *DebuggedProcess) Continue() error {
 	log.Println("Continue()")
-	err := dbp.currentGoroutine.next()
-	if err != nil {
-		//ignore ErrUnknownFDE
-		if _, ok := err.(frame.ErrUnknownFDE); !ok {
-			return err
-		}
-	}
+	//err := dbp.currentGoroutine.next()
+	//if err != nil {
+	//	//ignore ErrUnknownFDE
+	//	if _, ok := err.(frame.ErrUnknownFDE); !ok {
+	//		return err
+	//	}
+	//}
 
 	return dbp.currentGoroutine.cont()
 }
@@ -335,10 +420,12 @@ func (dbp *DebuggedProcess) Detach() error {
 }
 
 func (dbp *DebuggedProcess) resume() error {
+	log.Print("resume()")
 	return macherr(C.taskresume(C.int(dbp.Pid)))
 }
 
 func (dbp *DebuggedProcess) suspend() error {
+	log.Print("suspend()")
 	return macherr(C.tasksuspend(C.int(dbp.Pid)))
 }
 

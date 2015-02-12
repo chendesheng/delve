@@ -71,6 +71,8 @@ func registers(tid int) (Registers, error) {
 }
 
 func (g *Goroutine) next() error {
+	log.Print("next()")
+
 	pc, err := g.pc()
 	if err != nil {
 		return err
@@ -148,7 +150,9 @@ func (g *Goroutine) removeSingleStep() error {
 	return nil
 }
 
-//wait until receive interrupt
+var ErrInterrupt = errors.New("Interrupt")
+
+//Wait until receive an interrupt
 func (g *Goroutine) wait() error {
 	log.Println("wait")
 
@@ -164,9 +168,14 @@ func (g *Goroutine) wait() error {
 			return err
 		}
 		pc := regs.PC()
+		if arg.typ == TE_MANUAL {
+			return ErrInterrupt
+		}
 
 		if arg.typ == TE_BREAKPOINT {
 			if bp, ok := g.dbp.Breakpoints[pc-1]; ok {
+				log.Print("fix temp breakpoint")
+
 				mem, err := g.dbp.readMemory(uintptr(bp.Addr), 1)
 				if err != nil {
 					return err
@@ -209,6 +218,9 @@ func (g *Goroutine) wait() error {
 
 //continue and wait
 func (g *Goroutine) cont() error {
+	log.Print(string(debug.Stack()))
+	log.Print("cont()")
+
 	g.chwait <- struct{}{}
 	if err := g.wait(); err != nil {
 		return err

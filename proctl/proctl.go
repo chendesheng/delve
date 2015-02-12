@@ -33,7 +33,7 @@ type DebuggedProcess struct {
 	Breakpoints         map[uint64]*Breakpoint
 	breakpointIDCounter int
 	running             bool
-	halt                bool
+	sigstop             bool
 
 	//cache
 	allgaddr    uint64
@@ -231,18 +231,6 @@ func (dbp *DebuggedProcess) DwarfReader() *reader.Reader {
 	return reader.New(dbp.Dwarf)
 }
 
-func (dbp *DebuggedProcess) run(fn func() error) error {
-	dbp.running = true
-	dbp.halt = false
-	defer func() { dbp.running = false }()
-	if err := fn(); err != nil {
-		if _, ok := err.(ManualStopError); !ok {
-			return err
-		}
-	}
-	return nil
-}
-
 type ProcessExitedError struct {
 	pid int
 }
@@ -326,12 +314,15 @@ func (dbp *DebuggedProcess) LoadInformation() error {
 
 func (dbp *DebuggedProcess) Listen(handler func()) {
 	defer func() {
+		log.Print("Exit listen")
 		for _, g := range dbp.goroutines {
 			close(g.chcont)
 		}
 	}()
 	for evt := range dbp.chTrap {
 		log.Printf("receive chTrap: %v", evt)
+		log.Print("running false")
+		dbp.running = false
 
 		if evt.typ != TE_EXCEPTION && evt.err != nil {
 			log.Fatal(evt.err)
@@ -348,11 +339,15 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 
 		switch evt.typ {
 		case TE_MANUAL, TE_BREAKPOINT:
-			g, ok := dbp.goroutines[evt.gid]
-			oldg := g
-			if !ok {
-				g = dbp.addGoroutine(evt.gid, evt.tid)
+			if g, ok := dbp.goroutines[evt.gid]; ok {
 				dbp.currentGoroutine = g
+			} else {
+				dbp.currentGoroutine = dbp.addGoroutine(evt.gid, evt.tid)
+			}
+
+			if dbp.currentGoroutine.chcont == nil {
+				dbp.currentGoroutine.chcont = make(chan *waitarg)
+				log.Print("make chcont")
 				go func(g *Goroutine) {
 					if err := g.wait(); err != nil {
 						fmt.Print(err)
@@ -360,22 +355,27 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 
 					//log.Print("start handler:", g.id)
 					handler()
-				}(g)
-			} else {
-				dbp.currentGoroutine = g
+				}(dbp.currentGoroutine)
 			}
 
-			if dbp.currentGoroutine != oldg {
-				fmt.Printf("Switch to goroutine %d\n", g.id)
+			if dbp.currentGoroutine.id != evt.gid {
+				fmt.Printf("Switch to goroutine %d\n", dbp.currentGoroutine.id)
 			}
 
 			chwait := make(chan struct{})
-			g.chcont <- &waitarg{chwait, evt.typ}
+			dbp.currentGoroutine.chcont <- &waitarg{chwait, evt.typ}
 
 			//wait for handler
 			<-chwait
 
-			dbp.resume()
+			if dbp.sigstop {
+				ptracecont(dbp.Pid)
+				dbp.sigstop = false
+			} else {
+				dbp.resume()
+			}
+			log.Print("running true")
+			dbp.running = true
 		case TE_EXCEPTION:
 			if evt.err != nil {
 				fmt.Printf("Exception occurred: %s", evt.err.Error())

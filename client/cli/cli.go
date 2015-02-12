@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"log"
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
@@ -49,10 +50,12 @@ func Run(run bool, pid int, args []string) {
 		}
 	}
 
-	ch := make(chan os.Signal)
+	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT)
 	go func() {
+		log.Print("listen signal")
 		for _ = range ch {
+			log.Print("receive signal")
 			if dbp.Running() {
 				dbp.RequestManualStop()
 			}
@@ -85,7 +88,7 @@ func Run(run bool, pid int, args []string) {
 
 			cmd := cmds.Find(cmdstr)
 			err = cmd(dbp, args...)
-			if err != nil {
+			if err != nil && err != proctl.ErrInterrupt {
 				fmt.Fprintf(os.Stderr, "Command failed: %s\n", err)
 			}
 		}
