@@ -14,6 +14,8 @@ import (
 	"runtime/debug"
 	"syscall"
 	"unsafe"
+
+	"github.com/chendesheng/delve/dwarf/frame"
 )
 
 const (
@@ -102,17 +104,17 @@ func (dbp *DebuggedProcess) RequestManualStop() error {
 
 	if dbp.currentGoroutine.id == 0 {
 		//find a goroutine from dbp.goroutines
-		//for gid, g := range dbp.goroutines {
-		//	if gid != 0 {
-		//		dbp.currentGoroutine = g
-		//		dbp.chTrap <- &trapEvent{
-		//			gid: g.id,
-		//			tid: g.tid,
-		//			typ: TE_MANUAL,
-		//		}
-		//		return nil
-		//	}
-		//}
+		for gid, g := range dbp.goroutines {
+			if gid != 0 {
+				dbp.currentGoroutine = g
+				dbp.chTrap <- &trapEvent{
+					gid: g.id,
+					tid: g.tid,
+					typ: TE_MANUAL,
+				}
+				return nil
+			}
+		}
 
 		////find a goroutine from allg
 		//allg, err := dbp.allG()
@@ -380,13 +382,13 @@ func (dbp *DebuggedProcess) Registers() (Registers, error) {
 // Resume process.
 func (dbp *DebuggedProcess) Continue() error {
 	log.Println("Continue()")
-	//err := dbp.currentGoroutine.next()
-	//if err != nil {
-	//	//ignore ErrUnknownFDE
-	//	if _, ok := err.(frame.ErrUnknownFDE); !ok {
-	//		return err
-	//	}
-	//}
+	err := dbp.currentGoroutine.next()
+	if err != nil {
+		//ignore ErrUnknownFDE
+		if _, ok := err.(frame.ErrUnknownFDE); !ok {
+			return err
+		}
+	}
 
 	return dbp.currentGoroutine.cont()
 }

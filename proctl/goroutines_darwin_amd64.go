@@ -131,23 +131,21 @@ func (g *Goroutine) step() error {
 		return fmt.Errorf("step failed: %s", err.Error())
 	}
 
+	g.lastPC = regs.PC()
+
 	return g.cont()
 }
 
-func (g *Goroutine) removeSingleStep() error {
-	regs, err := registers(g.tid)
-	if err != nil {
-		return err
-	}
-
+func removeSingleStep(tid int, regs Registers) (bool, error) {
 	if rflags := regs.Rflags(); rflags&FLAGS_TF != 0 {
 		log.Printf("SetRflags:0x%x", rflags)
-		if err := regs.SetRflags(g.tid, rflags&^FLAGS_TF); err != nil {
-			return err
+		if err := regs.SetRflags(tid, rflags&^FLAGS_TF); err != nil {
+			return false, err
 		}
+		return true, nil
 	}
 
-	return nil
+	return false, nil
 }
 
 var ErrInterrupt = errors.New("Interrupt")
@@ -159,21 +157,42 @@ func (g *Goroutine) wait() error {
 	if arg, ok := <-g.chcont; ok {
 		g.chwait = arg.chwait
 
-		if err := g.removeSingleStep(); err != nil {
-			return err
-		}
-
 		regs, err := registers(g.tid)
 		if err != nil {
 			return err
 		}
-		pc := regs.PC()
+
+		isSingleStep, err := removeSingleStep(g.tid, regs)
+		if err != nil {
+			return err
+		}
+
 		if arg.typ == TE_MANUAL {
 			return ErrInterrupt
 		}
 
 		if arg.typ == TE_BREAKPOINT {
-			if bp, ok := g.dbp.Breakpoints[pc-1]; ok {
+			//There are several conditions here
+			// 1) Hit a breakpoint set by debugger
+			// 2) TODO: Hit a breakpoint set by runtime.Break()
+			// 3) Step single instruction passing 0xcc
+			if isSingleStep {
+				if bp, ok := g.dbp.Breakpoints[g.lastPC]; ok {
+					mem, err := g.dbp.readMemory(uintptr(bp.Addr), 1)
+					if err != nil {
+						return err
+					}
+
+					if mem[0] != 0xcc {
+						if _, err := g.dbp.writeMemory(uintptr(bp.Addr), []byte{0xcc}); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+			}
+
+			if bp, ok := g.dbp.Breakpoints[regs.PC()-1]; ok {
 				log.Print("fix temp breakpoint")
 
 				mem, err := g.dbp.readMemory(uintptr(bp.Addr), 1)

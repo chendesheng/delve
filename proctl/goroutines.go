@@ -14,6 +14,10 @@ type Goroutine struct {
 	tid    int
 	chwait chan struct{}
 	chcont chan *waitarg
+
+	//Record before single step
+	//After single step we need write 0xcc back to lastPC if there is a breakpoint there
+	lastPC uint64
 }
 
 type waitarg struct {
