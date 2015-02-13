@@ -93,16 +93,12 @@ func (dbp *DebuggedProcess) addGoroutine(gid int, tid int) *Goroutine {
 func (dbp *DebuggedProcess) RequestManualStop() error {
 	log.Print("RequestManualStop:", dbp.currentGoroutine.id)
 
-	//err := syscall.Kill(dbp.Pid, syscall.SIGSTOP)
-	//if err != nil {
-	//	return err
-	//}
-	//wait(dbp.Pid, 0)
-	dbp.sigstop = true
-	//err := dbp.suspend()
-	//if err != nil {
-	//	return err
-	//}
+	ptracecont(dbp.Pid)
+
+	err := dbp.suspend()
+	if err != nil {
+		return err
+	}
 
 	if dbp.currentGoroutine.id == 0 {
 		//find a goroutine from dbp.goroutines

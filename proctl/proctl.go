@@ -33,7 +33,6 @@ type DebuggedProcess struct {
 	Breakpoints         map[uint64]*Breakpoint
 	breakpointIDCounter int
 	running             bool
-	sigstop             bool
 
 	//cache
 	allgaddr    uint64
@@ -368,12 +367,7 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 			//wait for handler
 			<-chwait
 
-			if dbp.sigstop {
-				ptracecont(dbp.Pid)
-				dbp.sigstop = false
-			} else {
-				dbp.resume()
-			}
+			dbp.resume()
 			log.Print("running true")
 			dbp.running = true
 		case TE_EXCEPTION:
