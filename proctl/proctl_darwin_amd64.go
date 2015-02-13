@@ -97,6 +97,10 @@ func (dbp *DebuggedProcess) RequestManualStop() error {
 
 	ptracecont(dbp.Pid)
 
+	if !dbp.running {
+		return nil
+	}
+
 	err := dbp.suspend()
 	if err != nil {
 		return err

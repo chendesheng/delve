@@ -56,9 +56,7 @@ func Run(run bool, pid int, args []string) {
 		log.Print("listen signal")
 		for _ = range ch {
 			log.Print("receive signal")
-			if dbp.Running() {
-				dbp.RequestManualStop()
-			}
+			dbp.RequestManualStop()
 		}
 	}()
 

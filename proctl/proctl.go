@@ -64,10 +64,6 @@ func Launch(cmd []string) (*DebuggedProcess, error) {
 	return newDebugProcess(proc.Process.Pid, false)
 }
 
-func (dbp *DebuggedProcess) Running() bool {
-	return dbp.running
-}
-
 // Find a location by string (file+line, function, breakpoint id, addr)
 func (dbp *DebuggedProcess) FindLocation(str string) (uint64, error) {
 	// File + Line
