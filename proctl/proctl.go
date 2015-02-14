@@ -335,6 +335,7 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 		switch evt.typ {
 		case TE_MANUAL, TE_BREAKPOINT:
 			if g, ok := dbp.goroutines[evt.gid]; ok {
+				g.tid = evt.tid
 				dbp.currentGoroutine = g
 			} else {
 				dbp.currentGoroutine = dbp.addGoroutine(evt.gid, evt.tid)
