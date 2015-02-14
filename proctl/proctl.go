@@ -325,7 +325,7 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 		}
 
 		if evt.gid == -1 {
-			gid, err := dbp.getGoroutineId(evt.tid)
+			gid, err := dbp.getGid(evt.tid)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -356,6 +356,8 @@ func (dbp *DebuggedProcess) Listen(handler func()) {
 
 			if dbp.currentGoroutine.id != evt.gid {
 				fmt.Printf("Switch to goroutine %d\n", dbp.currentGoroutine.id)
+			} else {
+				fmt.Printf("Goroutine %d\n", dbp.currentGoroutine.id)
 			}
 
 			chwait := make(chan struct{})

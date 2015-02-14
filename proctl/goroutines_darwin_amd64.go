@@ -101,7 +101,6 @@ func (g *Goroutine) next() error {
 		log.Printf("ret: 0x%x", ret)
 
 		if !fde.Cover(pc) && pc != ret { //goto different function
-			log.Print("continueToReturnAddress")
 			if err := g.continueToReturnAddress(pc, fde); err != nil {
 				if _, ok := err.(InvalidAddressError); !ok {
 					return err
@@ -122,11 +121,14 @@ func (g *Goroutine) next() error {
 }
 
 func (g *Goroutine) step() error {
+	log.Print("step()")
+
 	regs, err := registers(g.tid)
 	if err != nil {
 		return err
 	}
 
+	log.Printf("enable single step:%d", g.id)
 	if err := regs.SetRflags(g.tid, regs.Rflags()|FLAGS_TF); err != nil {
 		return fmt.Errorf("step failed: %s", err.Error())
 	}
@@ -138,7 +140,6 @@ func (g *Goroutine) step() error {
 
 func removeSingleStep(tid int, regs Registers) (bool, error) {
 	if rflags := regs.Rflags(); rflags&FLAGS_TF != 0 {
-		log.Printf("SetRflags:0x%x", rflags)
 		if err := regs.SetRflags(tid, rflags&^FLAGS_TF); err != nil {
 			return false, err
 		}
@@ -152,7 +153,7 @@ var ErrInterrupt = errors.New("Interrupt")
 
 //Wait until receive an interrupt
 func (g *Goroutine) wait() error {
-	log.Println("wait")
+	log.Println("wait()")
 
 	if arg, ok := <-g.chcont; ok {
 		g.chwait = arg.chwait
@@ -162,12 +163,14 @@ func (g *Goroutine) wait() error {
 			return err
 		}
 
+		log.Printf("remove single step:%d", g.id)
 		isSingleStep, err := removeSingleStep(g.tid, regs)
 		if err != nil {
 			return err
 		}
 
 		if arg.typ == TE_MANUAL {
+			log.Print("return ErrInterrupt")
 			return ErrInterrupt
 		}
 
@@ -178,6 +181,8 @@ func (g *Goroutine) wait() error {
 			// 3) Step single instruction passing 0xcc
 			if isSingleStep {
 				if bp, ok := g.dbp.Breakpoints[g.lastPC]; ok {
+					g.lastPC = 0
+
 					mem, err := g.dbp.readMemory(uintptr(bp.Addr), 1)
 					if err != nil {
 						return err
@@ -213,17 +218,12 @@ func (g *Goroutine) wait() error {
 
 					if bp.isTemp() && !bp.belongsTo(g.id) {
 						//skip breakpoint that is not belongs to current g
-						if err := regs.SetRflags(g.tid, regs.Rflags()|FLAGS_TF); err != nil {
+						if err := g.step(); err != nil {
 							return err
 						}
 
 						log.Print("continue to wait")
 						return g.cont()
-					}
-				} else {
-					bp.OriginalData = mem
-					if _, err := g.dbp.writeMemory(uintptr(bp.Addr), []byte{0xcc}); err != nil {
-						return err
 					}
 				}
 			}
@@ -237,7 +237,7 @@ func (g *Goroutine) wait() error {
 
 //continue and wait
 func (g *Goroutine) cont() error {
-	log.Print(string(debug.Stack()))
+	//log.Print(string(debug.Stack()))
 	log.Print("cont()")
 
 	g.chwait <- struct{}{}
@@ -272,6 +272,7 @@ func (g *Goroutine) continueToReturnAddress(pc uint64, fde *frame.FrameDescripti
 	// and change our offset.
 	addr := g.ReturnAddressFromOffset(0)
 
+	log.Printf("set breakpoint at return address:%#v, goroutine %d", addr, g.id)
 	if _, err := g.dbp.setBreakpoint(addr, g.id); err != nil {
 		return err
 	}

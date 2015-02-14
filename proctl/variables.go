@@ -202,6 +202,8 @@ type G struct {
 	stackhi uint64
 }
 
+//Find goroutine id by compare SP with G struct's stack field (stack.lo <= SP <= stack.hi)
+//FIXME: It's hacky, need better way to find thread's goroutine. I've already tried and failed: 1)read tls 2)use procid field (not work on OSX)
 func (dbp *DebuggedProcess) allG() ([]*G, error) {
 	reader := dbp.Dwarf.Reader()
 
@@ -252,98 +254,30 @@ func (dbp *DebuggedProcess) allG() ([]*G, error) {
 	return allg, nil
 }
 
-//Find goroutine id by compare SP with G struct's stack field (stack.lo <= SP <= stack.hi)
-//FIXME: It's hacky, need better way to find thread's goroutine. I've already tried and failed: 1)read tls 2)use procid field (not work on OSX)
-func (dbp *DebuggedProcess) getGoroutineId(tid int) (int, error) {
+func (dbp *DebuggedProcess) getGid(tid int) (int, error) {
 	regs, err := registers(tid)
 	if err != nil {
 		return 0, err
 	}
 
-	sp := regs.SP()
-	reader := dbp.Dwarf.Reader()
-
-	allglen, err := allglenval(dbp, reader)
+	allg, err := dbp.allG()
 	if err != nil {
 		return 0, err
 	}
 
-	if dbp.allgaddr == 0 {
-		reader.Seek(0)
-		allgentryaddr, err := addressFor(dbp, "runtime.allg", reader)
-		if err != nil {
-			return 0, err
-		}
-
-		faddr, err := dbp.readMemory(uintptr(allgentryaddr), int(ptrsize))
-		if err != nil {
-			return 0, err
-		}
-
-		dbp.allgaddr = binary.LittleEndian.Uint64(faddr)
-	}
-
-	allgptrbytes, err := dbp.readMemory(uintptr(dbp.allgaddr), int(allglen*uint64(ptrsize)))
-	if err != nil {
-		return 0, err
-	}
-
-	for i := uint64(0); i < allglen; i++ {
-		gaddr := binary.LittleEndian.Uint64(allgptrbytes[i*8 : i*8+8])
-		gbytes, err := dbp.readMemory(uintptr(gaddr), 136)
-		if err != nil {
-			return 0, err
-		}
-
-		gid := binary.LittleEndian.Uint64(gbytes[128 : 128+8])
-		lo := binary.LittleEndian.Uint64(gbytes[:8])
-		hi := binary.LittleEndian.Uint64(gbytes[8 : 8+8])
-
-		log.Printf("sp %#v, gid: %#v, lo: %#v, hi: %#v", sp, gid, lo, hi)
-		if lo <= sp && sp <= hi {
-			return int(gid), nil
-		}
-
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	//return 0, fmt.Errorf("Can't find goroutine by sp: %#v", sp)
-	return 0, nil
+	return findGid(regs, allg), nil
 }
 
-func (dbp *DebuggedProcess) allGoroutineIds() ([]int, error) {
-	reader := dbp.Dwarf.Reader()
+func findGid(regs Registers, allg []*G) int {
+	sp := regs.SP()
 
-	allglen, err := allglenval(dbp, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	allgaddr, err := dbp.getAllgaddr(reader)
-	if err != nil {
-		return nil, err
-	}
-
-	allgptrbytes, err := dbp.readMemory(uintptr(allgaddr), int(allglen*uint64(ptrsize)))
-	if err != nil {
-		return nil, err
-	}
-
-	gids := make([]int, allglen)
-	for i := uint64(0); i < allglen; i++ {
-		gaddr := binary.LittleEndian.Uint64(allgptrbytes[i*8 : i*8+8])
-		gbytes, err := dbp.readMemory(uintptr(gaddr+128), 8)
-		if err != nil {
-			return nil, err
+	for _, g := range allg {
+		if g.stacklo <= sp && sp <= g.stackhi {
+			return g.id
 		}
-
-		gid := binary.LittleEndian.Uint64(gbytes)
-		gids = append(gids, int(gid))
 	}
 
-	return gids, nil
+	return 0
 }
 
 func (dbp *DebuggedProcess) getAllgaddr(reader *dwarf.Reader) (uint64, error) {

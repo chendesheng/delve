@@ -8,6 +8,7 @@ import "C"
 import (
 	"debug/macho"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"reflect"
@@ -93,83 +94,55 @@ func (dbp *DebuggedProcess) addGoroutine(gid int, tid int) *Goroutine {
 }
 
 func (dbp *DebuggedProcess) RequestManualStop() error {
-	log.Print("RequestManualStop:", dbp.currentGoroutine.id)
+	log.Print("RequestManualStop(), curg:", dbp.currentGoroutine.id)
 
 	ptracecont(dbp.Pid)
 
 	if !dbp.running {
+		fmt.Println("Not running")
 		return nil
 	}
 
-	err := dbp.suspend()
+	if err := dbp.suspend(); err != nil {
+		return err
+	}
+
+	ths, err := dbp.getThreads()
+	if err != nil {
+		return err
+	}
+	log.Print("ths:", ths)
+
+	allg, err := dbp.allG()
 	if err != nil {
 		return err
 	}
 
-	if dbp.currentGoroutine.id == 0 {
-		//find a goroutine from dbp.goroutines
-		for gid, g := range dbp.goroutines {
-			if gid != 0 {
-				dbp.currentGoroutine = g
-				dbp.chTrap <- &trapEvent{
-					gid: g.id,
-					tid: g.tid,
-					typ: TE_MANUAL,
-				}
-				return nil
-			}
-		}
-
-		////find a goroutine from allg
-		//allg, err := dbp.allG()
-		//if err != nil {
-		//	return err
-		//}
-
-		//var g *G
-		//for _, g = range allg {
-		//	if g.id != 0 {
-		//		break
-		//	}
-		//}
-
-		ths, err := dbp.getThreads()
+	//go though all threads, try to break at a not-g0 goroutine
+	for _, th := range ths {
+		regs, err := registers(th)
+		log.Printf("regs:%#v", regs)
 		if err != nil {
 			return err
 		}
-		log.Print("ths:", ths)
 
-		for _, th := range ths {
-			regs, err := registers(th)
-			log.Printf("regs:%#v", regs)
-			if err != nil {
-				return err
+		if gid := findGid(regs, allg); gid > 0 {
+			//We need correct currentGoroutine to print out current break location right after return
+			dbp.currentGoroutine = dbp.addGoroutine(gid, th)
+			dbp.chTrap <- &trapEvent{
+				gid: gid,
+				tid: th,
+				typ: TE_MANUAL,
 			}
-
-			gid, err := dbp.getGoroutineId(th)
-			if err != nil {
-				return err
-			}
-
-			if gid > 0 {
-				dbp.currentGoroutine = dbp.addGoroutine(gid, th)
-				dbp.chTrap <- &trapEvent{
-					gid: gid,
-					tid: th,
-					typ: TE_MANUAL,
-				}
-				return nil
-			}
-
-			//if g.stacklo <= regs.SP() && regs.SP() <= g.stackhi {
-			//	break
-			//}
+			return nil
 		}
+
 	}
 
+	//can't find any goroutine other than g0
 	dbp.chTrap <- &trapEvent{
-		gid: dbp.currentGoroutine.id,
-		tid: dbp.currentGoroutine.tid,
+		gid: 0,
+		tid: ths[0],
 		typ: TE_MANUAL,
 	}
 	return nil
@@ -392,6 +365,8 @@ func (dbp *DebuggedProcess) Continue() error {
 		if _, ok := err.(frame.ErrUnknownFDE); !ok {
 			return err
 		}
+
+		log.Print(err)
 	}
 
 	return dbp.currentGoroutine.cont()
