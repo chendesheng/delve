@@ -328,7 +328,7 @@ func TestNext(t *testing.T) {
 		{34, 35},
 		{35, 41},
 		{41, 40},
-		{40, 41},
+		{40, 19},
 	}
 	fp, err := filepath.Abs("../_fixtures/testnextprog.go")
 	if err != nil {
@@ -363,10 +363,7 @@ func TestNext(t *testing.T) {
 		}
 
 		go func() {
-			time.Sleep(100 * time.Millisecond)
-			if err := p.Process.Kill(); err != nil {
-				t.Fatal(err)
-			}
+			os.Exit(0)
 		}()
 
 		p.Continue()

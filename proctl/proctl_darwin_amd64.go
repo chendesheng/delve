@@ -149,7 +149,11 @@ func (dbp *DebuggedProcess) RequestManualStop() error {
 func waitroutine(dbp *DebuggedProcess) {
 	for {
 		var status syscall.WaitStatus
-		syscall.Wait4(dbp.Pid, &status, 0, nil)
+		_, err := syscall.Wait4(dbp.Pid, &status, 0, nil)
+		if err != nil {
+			log.Print("wait err:", err)
+			continue
+		}
 
 		log.Print("Wait4:", status)
 		if status.Exited() {
