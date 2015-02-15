@@ -133,6 +133,13 @@ func (g *Goroutine) step() error {
 		return fmt.Errorf("step failed: %s", err.Error())
 	}
 
+	//handle step through a breakpoint
+	if bp, ok := g.dbp.Breakpoints[regs.PC()]; ok {
+		if _, err := g.dbp.writeMemory(uintptr(bp.Addr), bp.OriginalData); err != nil {
+			return err
+		}
+	}
+
 	g.lastPC = regs.PC()
 
 	return g.cont()

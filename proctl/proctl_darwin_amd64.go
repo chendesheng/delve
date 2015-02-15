@@ -96,8 +96,6 @@ func (dbp *DebuggedProcess) addGoroutine(gid int, tid int) *Goroutine {
 func (dbp *DebuggedProcess) RequestManualStop() error {
 	log.Print("RequestManualStop(), curg:", dbp.currentGoroutine.id)
 
-	ptracecont(dbp.Pid)
-
 	if !dbp.running {
 		fmt.Println("Not running")
 		return nil
@@ -161,44 +159,12 @@ func waitroutine(dbp *DebuggedProcess) {
 				typ: TE_EXIT,
 			}
 			return
+		} else if status.Stopped() {
+			log.Print("stopped")
+			ptracecont(dbp.Pid)
 		}
 	}
 }
-
-//func trapWait(dbp *DebuggedProcess, pid int) (int, *syscall.WaitStatus, error) {
-//	for {
-//		evt := <-dbp.chTrap
-//		log.Printf("receive chTrap: %v", evt)
-//
-//		wpid, status, err := evt.id, evt.status, evt.err
-//
-//		if err != nil {
-//			return -1, nil, fmt.Errorf("wait err %s %d", err, pid)
-//		}
-//
-//		if wpid == 0 {
-//			continue
-//		}
-//
-//		if th, ok := dbp.Threads[wpid]; ok {
-//			th.Status = status
-//		}
-//
-//		if status.Exited() && wpid == dbp.Pid {
-//			dbp.CurrentThread.Status = status
-//			return -1, status, ProcessExitedError{wpid}
-//		}
-//
-//		if status.StopSignal() == syscall.SIGTRAP {
-//			log.Print("trapWait:SIGTRAP")
-//			return wpid, status, nil
-//		}
-//
-//		if status.StopSignal() == syscall.SIGSTOP && dbp.halt {
-//			return -1, nil, ManualStopError{}
-//		}
-//	}
-//}
 
 func wait(pid, options int) (int, *syscall.WaitStatus, error) {
 	var status syscall.WaitStatus
@@ -291,9 +257,9 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 			evttype = TE_BREAKPOINT
 		} else {
 			evttype = TE_EXCEPTION
-			//regs := mustGetRegs(tid)
-			//log.Printf("exception regs:%#v", regs)
-			//log.Fatal(fmt.Sprintf("exception: %d", int(exception)))
+			regs := mustGetRegs(tid)
+			log.Printf("exception regs:%#v", regs)
+			log.Printf("exception: %d", int(exception))
 		}
 
 		//This won't block because chTrap is buffered
@@ -313,7 +279,7 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 		typ: TE_MANUAL,
 	}
 
-	//go waitroutine(&dbp)
+	go waitroutine(&dbp)
 	go C.server()
 
 	proc, err := os.FindProcess(pid)
