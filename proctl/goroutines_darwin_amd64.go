@@ -24,7 +24,9 @@ func macherr(n C.int) error {
 		return nil
 	} else {
 		log.Print(string(debug.Stack()))
-		return errors.New(C.GoString(C.mach_error_string(C.mach_error_t(n))))
+		err := errors.New(C.GoString(C.mach_error_string(C.mach_error_t(n))))
+		log.Print(err)
+		return err
 	}
 }
 

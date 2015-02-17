@@ -71,6 +71,7 @@ func TestStep(t *testing.T) {
 			_, err := p.Break(helloworldaddr)
 			assertNoError(err, t, "Break()")
 			assertNoError(p.Continue(), t, "Continue()")
+			return
 		}
 
 		regs := getRegisters(p, t)
@@ -85,11 +86,13 @@ func TestStep(t *testing.T) {
 		}
 
 		go func() {
+			time.Sleep(100 * time.Millisecond)
 			if err := p.Process.Kill(); err != nil {
-				t.Fatal(err)
+				log.Fatal(err)
 			}
 		}()
 
+		p.ClearByLocation("main.helloworld")
 		p.Continue()
 	})
 }
@@ -211,12 +214,12 @@ func TestBreakpoint(t *testing.T) {
 		}
 
 		go func() {
-			time.Sleep(100 * time.Millisecond)
 			if err := p.Process.Kill(); err != nil {
 				t.Fatal(err)
 			}
 		}()
 
+		p.ClearByLocation("main.helloworld")
 		p.Continue()
 	})
 }

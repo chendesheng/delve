@@ -148,24 +148,31 @@ func (dbp *DebuggedProcess) RequestManualStop() error {
 
 func waitroutine(dbp *DebuggedProcess) {
 	for {
-		var status syscall.WaitStatus
-		_, err := syscall.Wait4(dbp.Pid, &status, 0, nil)
+		_, status, err := wait(dbp.Pid, 0)
 		if err != nil {
 			log.Print("wait err:", err)
+			if status.Exited() {
+				dbp.chTrap <- &trapEvent{
+					gid: 0,
+					tid: 0,
+					typ: TE_EXIT,
+				}
+				return
+			}
+
 			continue
 		}
 
-		log.Print("Wait4:", status)
-		if status.Exited() {
-			dbp.chTrap <- &trapEvent{
-				gid: 0,
-				tid: 0,
-				typ: TE_EXIT,
+		log.Printf("Wait4:%d, signal:%d, stop signal:%d", status, status.Signal(), status.StopSignal())
+
+		if status.Stopped() {
+			if status.StopSignal() == syscall.SIGINT {
+				if err := ptracecont(dbp.Pid); err != nil {
+					log.Print(err)
+				}
+			} else if status.StopSignal() == syscall.SIGKILL {
+				ptracekill(dbp.Pid)
 			}
-			return
-		} else if status.Stopped() {
-			log.Print("stopped")
-			ptracecont(dbp.Pid)
 		}
 	}
 }
@@ -211,7 +218,7 @@ func (dbp *DebuggedProcess) getThreads() ([]int, error) {
 }
 
 // Returns a new DebuggedProcess struct with sensible defaults.
-func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
+func newDebugProcess(pid int) (*DebuggedProcess, error) {
 	dbp := DebuggedProcess{
 		Pid:         pid,
 		Breakpoints: make(map[uint64]*Breakpoint),
@@ -293,13 +300,9 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 
 	dbp.Process = proc
 
-	if !attach {
-		//only use ptrace for startup
-		//err = syscall.PtraceDetach(pid)
-		err := ptracecont(pid)
-		if err != nil {
-			return nil, err
-		}
+	err = ptracecont(pid)
+	if err != nil {
+		return nil, err
 	}
 
 	err = dbp.LoadInformation()
@@ -308,6 +311,16 @@ func newDebugProcess(pid int, attach bool) (*DebuggedProcess, error) {
 	}
 
 	return &dbp, nil
+}
+
+func ptracekill(pid int) error {
+	log.Print("ptracekill()")
+
+	_, _, err := syscall.Syscall6(syscall.SYS_PTRACE, syscall.PTRACE_KILL, uintptr(pid), 1, 0, 0, 0)
+	if err != syscall.Errno(0) {
+		return err
+	}
+	return nil
 }
 
 func ptracecont(pid int) error {
@@ -354,7 +367,16 @@ func (dbp *DebuggedProcess) Next() error {
 }
 
 func Attach(pid int) (*DebuggedProcess, error) {
-	dbp, err := newDebugProcess(pid, true)
+	if err := syscall.PtraceAttach(pid); err != nil {
+		return nil, err
+	}
+
+	_, _, err := wait(pid, 0)
+	if err != nil {
+		return nil, fmt.Errorf("waiting for target execve failed: %s", err)
+	}
+
+	dbp, err := newDebugProcess(pid)
 	if err != nil {
 		return nil, err
 	}
@@ -363,6 +385,10 @@ func Attach(pid int) (*DebuggedProcess, error) {
 }
 
 func (dbp *DebuggedProcess) Detach() error {
+	if err := syscall.PtraceDetach(dbp.Pid); err != nil {
+		log.Print(err)
+	}
+
 	return macherr(C.int(C.detach(C.int(dbp.Pid))))
 }
 

@@ -61,7 +61,7 @@ func Launch(cmd []string) (*DebuggedProcess, error) {
 		return nil, fmt.Errorf("waiting for target execve failed: %s", err)
 	}
 
-	return newDebugProcess(proc.Process.Pid, false)
+	return newDebugProcess(proc.Process.Pid)
 }
 
 // Find a location by string (file+line, function, breakpoint id, addr)
