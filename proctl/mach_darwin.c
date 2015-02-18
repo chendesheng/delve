@@ -13,9 +13,16 @@ static mach_port_t excport = 0;
 
 #define CHECK_KRET(a) if ((a) != KERN_SUCCESS) {return (a);}
 
+static int g_task = 0;
 int gettask(int pid, int* task) {
-        kern_return_t kret = task_for_pid(mach_task_self(), pid, (mach_port_t*)task);
-        CHECK_KRET(kret);
+        if (g_task == 0) {
+                kern_return_t kret = task_for_pid(mach_task_self(), pid, (mach_port_t*)task);
+                CHECK_KRET(kret);
+
+                g_task = *task;
+        } else {
+                *task = g_task;
+        }
 
         return KERN_SUCCESS;
 }
@@ -114,6 +121,8 @@ int setexcport(int task) {
 }
 
 int attach(int pid, void* ths, int* nth) {
+        g_task = 0;
+
         int task;
         kern_return_t kret = gettask(pid, &task);
         CHECK_KRET(kret);
